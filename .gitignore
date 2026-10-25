@@ -76,3 +76,6 @@ conversation-context.txt
 
 # protobuf generated files
 *.pb.go
+
+# rendered Helm chart
+/dist/

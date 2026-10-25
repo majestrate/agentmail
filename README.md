@@ -50,6 +50,15 @@ make
 
 That produces `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`, and the directory gRPC server at `bin/directory`. `make server` generates the protobuf code and builds only that server. Each image is also its own target: `make postfix`, `make dovecot`, or `make directory`. The directory image target generates the protobuf code first.
 
+`make charts` compiles `charts/agentmail` and writes the rendered manifests to `dist/agentmail.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. The chart does not store the Bitwarden server base, so pass it at compile time with the organization and project ids:
+
+```shell
+make charts \
+  BITWARDEN_SERVER_URL="$BITWARDEN_SERVER_URL" \
+  BITWARDEN_ORGANIZATION_ID="$BITWARDEN_ORGANIZATION_ID" \
+  BITWARDEN_PROJECT_ID="$BITWARDEN_PROJECT_ID"
+```
+
 The chart expects those image names, plus `docker.io/library/postgres:17`.
 
 ## Install

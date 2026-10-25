@@ -1,4 +1,6 @@
-# Postfix on Debian stable. The process runs as the unprivileged postfix user
+# Postfix on Debian stable. setup.sh runs as root during the image build and
+# is deleted before the image is finished. At start, postfix-runtime.sh
+# configures Postfix from the environment as the unprivileged postfix user
 # and listens on POSTFIX_SMTP_PORT (default 2525). A Kubernetes Service maps
 # port 25 to that container port.
 #
@@ -16,32 +18,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     DOVECOT_LMTP_HOST=dovecot \
     DOVECOT_LMTP_PORT=24
 
-RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d \
-    && chmod 755 /usr/sbin/policy-rc.d \
-    && printf '%s\n' \
-        'postfix postfix/main_mailer_type select Local only' \
-        'postfix postfix/mailname string localhost' \
-        'postfix postfix/destinations string localhost' \
-        | debconf-set-selections \
-    && apt-get update \
-    && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        postfix \
-        postfix-pgsql \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && postconf -m | grep -qx pgsql \
-    && groupmod -g 5001 postfix \
-    && usermod -u 5001 postfix \
-    && postfix set-permissions \
-    && chown -R postfix:postfix /etc/postfix /etc/mailname /var/lib/postfix \
-    && chown postfix:postfix /var/spool/postfix /var/spool/postfix/pid
+COPY postfix/setup.sh /tmp/postfix-setup.sh
+RUN chmod 755 /tmp/postfix-setup.sh \
+    && /tmp/postfix-setup.sh \
+    && rm -f /tmp/postfix-setup.sh
 
-COPY postfix/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
+COPY postfix/runtime.sh /usr/local/bin/postfix-runtime.sh
+RUN chmod 755 /usr/local/bin/postfix-runtime.sh
 
 USER 5001:5001
 
-ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/postfix-runtime.sh"]
 CMD ["postfix", "start-fg"]

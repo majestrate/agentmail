@@ -1,5 +1,6 @@
 #!/bin/bash
-# Configure unprivileged Postfix. Database passwords and custom SQL arrive as
+# Configure Postfix from the environment, then start it. Runs as the
+# unprivileged postfix user. Database passwords and custom SQL arrive as
 # standard base64. Kubernetes publishes container port 2525 as SMTP port 25.
 
 set -euo pipefail
