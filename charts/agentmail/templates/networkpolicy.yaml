@@ -1,0 +1,154 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postgresName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- range concat .Values.networkPolicy.agentCIDRs .Values.networkPolicy.nodeCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postfix.containerPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dovecot.lmtp.containerPort }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- range concat .Values.networkPolicy.agentCIDRs .Values.networkPolicy.nodeCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dovecot.imap.containerPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.dovecot.lmtp.containerPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.port }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- range concat .Values.networkPolicy.agentCIDRs .Values.networkPolicy.nodeCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.directory.containerPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.port }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}

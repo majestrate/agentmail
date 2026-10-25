@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}-data
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.dovecot.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.dovecot.persistence.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 6 }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.dovecot.runAsUser }}
+        runAsGroup: {{ .Values.dovecot.runAsGroup }}
+        fsGroup: {{ .Values.dovecot.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        {{- include "agentmail.migrateContainer" . | nindent 8 }}
+      containers:
+        - name: dovecot
+          image: {{ include "agentmail.image" .Values.images.dovecot }}
+          imagePullPolicy: {{ .Values.images.dovecot.pullPolicy }}
+          ports:
+            - name: imap
+              containerPort: {{ .Values.dovecot.imap.containerPort }}
+            - name: lmtp
+              containerPort: {{ .Values.dovecot.lmtp.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentmail.configMapName" . }}
+          env:
+            {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: imap
+          livenessProbe:
+            tcpSocket:
+              port: imap
+          volumeMounts:
+            - name: mail
+              mountPath: /var/mail
+            - name: runtime
+              mountPath: /run/dovecot
+          resources:
+            {{- toYaml .Values.dovecot.resources | nindent 12 }}
+      volumes:
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "agentmail.dovecotName" . }}-data
+        - name: runtime
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+  ports:
+    - name: imap
+      port: {{ .Values.dovecot.imap.servicePort }}
+      targetPort: imap
+    - name: lmtp
+      port: {{ .Values.dovecot.lmtp.servicePort }}
+      targetPort: lmtp

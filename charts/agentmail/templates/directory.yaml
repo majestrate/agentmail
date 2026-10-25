@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.directory.runAsUser }}
+        runAsGroup: {{ .Values.directory.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: directory
+          image: {{ include "agentmail.image" .Values.images.directory }}
+          imagePullPolicy: {{ .Values.images.directory.pullPolicy }}
+          ports:
+            - name: grpc
+              containerPort: {{ .Values.directory.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentmail.configMapName" . }}
+          env:
+            {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+          resources:
+            {{- toYaml .Values.directory.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+  ports:
+    - name: grpc
+      port: {{ .Values.directory.servicePort }}
+      targetPort: grpc

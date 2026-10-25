@@ -1,0 +1,24 @@
+Agentmail is installed in namespace {{ .Release.Namespace }}.
+
+SMTP {{ include "agentmail.postfixName" . }}:{{ .Values.postfix.servicePort }} (container {{ .Values.postfix.containerPort }})
+IMAP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.imap.servicePort }} (container {{ .Values.dovecot.imap.containerPort }})
+LMTP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.lmtp.servicePort }} (container {{ .Values.dovecot.lmtp.containerPort }})
+directory {{ include "agentmail.directoryName" . }}:{{ .Values.directory.servicePort }}
+
+Mail domain {{ .Values.mail.domain }}. Agents on {{ include "agentmail.internalNetworks" . }} may submit mail.
+
+Database user, database name, and password are synced from Bitwarden Secrets
+Manager at {{ include "agentmail.bitwardenBase" . }} by {{ include "agentmail.secretName" . }}.
+Before the pods can start:
+
+1. Install External Secrets with the Bitwarden SDK server:
+     helm install external-secrets external-secrets/external-secrets \
+       -n external-secrets --create-namespace \
+       --set bitwarden-sdk-server.enabled=true
+2. Put the SDK server CA in Secret {{ .Values.bitwarden.ca.name }} key {{ .Values.bitwarden.ca.key }}.
+3. Put the machine account access token in Secret {{ .Values.bitwarden.authSecret.name }} key {{ .Values.bitwarden.authSecret.key }}.
+4. In Bitwarden project {{ .Values.bitwarden.projectID }}, create secrets named
+   {{ .Values.bitwarden.secrets.user }}, {{ .Values.bitwarden.secrets.database }}, and
+   {{ .Values.bitwarden.secrets.passwordB64 }}. The password value is standard base64.
+
+Point networkPolicy.nodeCIDRs at the node network so kubelet probes stay allowed.

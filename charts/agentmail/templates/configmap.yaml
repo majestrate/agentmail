@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.configMapName" . }}
+  labels:
+    {{- include "agentmail.labels" . | nindent 4 }}
+data:
+  MAIL_DOMAIN: {{ .Values.mail.domain | quote }}
+  POSTFIX_MYHOSTNAME: {{ .Values.mail.hostname | quote }}
+  POSTFIX_INTERNAL_NETWORKS: {{ include "agentmail.internalNetworks" . | quote }}
+  POSTFIX_PGSQL_HOST: {{ include "agentmail.postgresName" . | quote }}
+  POSTFIX_PGSQL_PORT: {{ .Values.postgres.port | quote }}
+  PGSSLMODE: {{ .Values.mail.pgsslmode | quote }}
+  DOVECOT_LMTP_HOST: {{ include "agentmail.dovecotName" . | quote }}
+  DOVECOT_LMTP_PORT: {{ .Values.dovecot.lmtp.servicePort | quote }}
+  POSTFIX_SMTP_PORT: {{ .Values.postfix.containerPort | quote }}
+  DOVECOT_IMAP_PORT: {{ .Values.dovecot.imap.containerPort | quote }}
+  DOVECOT_LMTP_LISTEN_PORT: {{ .Values.dovecot.lmtp.containerPort | quote }}
+  DIRECTORY_LISTEN: {{ printf ":%v" .Values.directory.containerPort | quote }}

@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postgresName" . }}-data
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.postgres.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.postgres.persistence.size }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postgresName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 6 }}
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.postgres.runAsUser }}
+        runAsGroup: {{ .Values.postgres.runAsGroup }}
+        fsGroup: {{ .Values.postgres.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: {{ include "agentmail.image" .Values.images.postgres }}
+          imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
+          args:
+            - -c
+            - listen_addresses=*
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.postgres.port }}
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentmail.secretName" . }}
+                  key: POSTGRES_USER
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentmail.secretName" . }}
+                  key: POSTGRES_DB
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "agentmail.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: PGDATA
+              value: {{ .Values.postgresql.pgdata | quote }}
+          securityContext:
+            {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+          readinessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 10
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "agentmail.postgresName" . }}-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postgresName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 4 }}
+  ports:
+    - name: postgres
+      port: {{ .Values.postgres.port }}
+      targetPort: postgres

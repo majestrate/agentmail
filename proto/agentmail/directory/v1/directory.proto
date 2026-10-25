@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package agentmail.directory.v1;
+
+option go_package = "agentmail/gen/agentmail/directory/v1;directoryv1";
+
+import "google/protobuf/timestamp.proto";
+
+// Directory is the management interface for mailbox users, distribution
+// lists, and list membership. Postfix reads the same tables for delivery.
+service Directory {
+  rpc CreateUser(CreateUserRequest) returns (User);
+  rpc GetUser(GetUserRequest) returns (User);
+  rpc ListUsers(ListUsersRequest) returns (ListUsersResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (User);
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+
+  rpc CreateDistributionList(CreateDistributionListRequest) returns (DistributionList);
+  rpc GetDistributionList(GetDistributionListRequest) returns (DistributionList);
+  rpc ListDistributionLists(ListDistributionListsRequest) returns (ListDistributionListsResponse);
+  rpc UpdateDistributionList(UpdateDistributionListRequest) returns (DistributionList);
+  rpc DeleteDistributionList(DeleteDistributionListRequest) returns (DeleteDistributionListResponse);
+
+  rpc AddMember(AddMemberRequest) returns (Membership);
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse);
+  rpc SetMembers(SetMembersRequest) returns (ListMembersResponse);
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse);
+  rpc ListUserMemberships(ListUserMembershipsRequest) returns (ListUserMembershipsResponse);
+}
+
+message User {
+  int64 id = 1;
+  string address = 2;
+  string display_name = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  int64 list_count = 6;
+}
+
+message DistributionList {
+  int64 id = 1;
+  string address = 2;
+  string display_name = 3;
+  google.protobuf.Timestamp created_at = 4;
+  google.protobuf.Timestamp updated_at = 5;
+  int64 member_count = 6;
+}
+
+message Membership {
+  int64 list_id = 1;
+  int64 user_id = 2;
+  string list_address = 3;
+  string user_address = 4;
+  string user_display_name = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message CreateUserRequest {
+  string address = 1;
+  string display_name = 2;
+  string password = 3;
+}
+
+message GetUserRequest {
+  int64 id = 1;
+  string address = 2;
+}
+
+message ListUsersRequest {
+  int32 page_size = 1;
+  // Standard base64 of the last seen user id. Empty starts at the beginning.
+  string page_token = 2;
+}
+
+message ListUsersResponse {
+  repeated User users = 1;
+  string next_page_token = 2;
+}
+
+message UpdateUserRequest {
+  int64 id = 1;
+  optional string address = 2;
+  optional string display_name = 3;
+  optional string password = 4;
+}
+
+message DeleteUserRequest {
+  int64 id = 1;
+}
+
+message DeleteUserResponse {}
+
+message CreateDistributionListRequest {
+  string address = 1;
+  string display_name = 2;
+}
+
+message GetDistributionListRequest {
+  int64 id = 1;
+  string address = 2;
+}
+
+message ListDistributionListsRequest {
+  int32 page_size = 1;
+  string page_token = 2;
+}
+
+message ListDistributionListsResponse {
+  repeated DistributionList distribution_lists = 1;
+  string next_page_token = 2;
+}
+
+message UpdateDistributionListRequest {
+  int64 id = 1;
+  optional string address = 2;
+  optional string display_name = 3;
+}
+
+message DeleteDistributionListRequest {
+  int64 id = 1;
+}
+
+message DeleteDistributionListResponse {}
+
+message AddMemberRequest {
+  int64 list_id = 1;
+  int64 user_id = 2;
+}
+
+message RemoveMemberRequest {
+  int64 list_id = 1;
+  int64 user_id = 2;
+}
+
+message RemoveMemberResponse {}
+
+// SetMembers replaces the membership of one distribution list.
+message SetMembersRequest {
+  int64 list_id = 1;
+  repeated int64 user_ids = 2;
+}
+
+message ListMembersRequest {
+  int64 list_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListMembersResponse {
+  repeated Membership members = 1;
+  string next_page_token = 2;
+}
+
+message ListUserMembershipsRequest {
+  int64 user_id = 1;
+  int32 page_size = 2;
+  string page_token = 3;
+}
+
+message ListUserMembershipsResponse {
+  repeated Membership memberships = 1;
+  string next_page_token = 2;
+}

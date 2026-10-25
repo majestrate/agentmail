@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.postfix.runAsUser }}
+        runAsGroup: {{ .Values.postfix.runAsGroup }}
+        fsGroup: {{ .Values.postfix.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        {{- include "agentmail.migrateContainer" . | nindent 8 }}
+      containers:
+        - name: postfix
+          image: {{ include "agentmail.image" .Values.images.postfix }}
+          imagePullPolicy: {{ .Values.images.postfix.pullPolicy }}
+          ports:
+            - name: smtp
+              containerPort: {{ .Values.postfix.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentmail.configMapName" . }}
+          env:
+            {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+          readinessProbe:
+            tcpSocket:
+              port: smtp
+          livenessProbe:
+            tcpSocket:
+              port: smtp
+          resources:
+            {{- toYaml .Values.postfix.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+  ports:
+    - name: smtp
+      port: {{ .Values.postfix.servicePort }}
+      targetPort: smtp

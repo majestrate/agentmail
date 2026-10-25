@@ -1,0 +1,121 @@
+# Operational settings. Credentials are not stored here.
+# Agent CIDRs are Postfix's extra mynetworks ranges and the NetworkPolicy
+# sources, so the two cannot drift. Node CIDRs exist so kubelet probes are
+# not blocked; replace 192.168.0.0/16 with the node network.
+
+nameOverride: ""
+fullnameOverride: ""
+
+mail:
+  domain: example.com
+  hostname: mail.example.com
+  pgsslmode: prefer
+
+# Database role, database name, and password live in Bitwarden Secrets Manager.
+# Pass the server base when rendering the chart. The chart calls
+# {serverURL}/api and {serverURL}/identity.
+#   --set bitwarden.serverURL=$BITWARDEN_SERVER_URL
+# The machine-account access token is a Kubernetes Secret you create in the
+# release namespace. This chart only stores its name.
+#
+# Create three secrets in the Bitwarden project. The password secret's value
+# is the standard base64 of the password, one line, with no newline:
+#   printf '%s' 'the-password' | base64 -w0
+bitwarden:
+  serverURL: ""
+  organizationID: ""
+  projectID: ""
+  sdkURL: https://bitwarden-sdk-server.external-secrets.svc.cluster.local:9998
+  refreshInterval: 1h
+  authSecret:
+    name: bitwarden-access-token
+    key: token
+  # TLS trust for the Bitwarden SDK server. The Secret or ConfigMap must
+  # already exist in the release namespace. SecretStore cannot read another
+  # namespace.
+  ca:
+    type: Secret
+    name: bitwarden-sdk-server-ca
+    key: ca.crt
+  # Bitwarden secret names in this project. A name must match exactly one secret.
+  secrets:
+    user: agentmail-pgsql-user
+    database: agentmail-pgsql-database
+    passwordB64: agentmail-pgsql-password-b64
+
+postgresql:
+  pgdata: /var/lib/postgresql/data/pgdata
+
+networkPolicy:
+  enabled: true
+  agentCIDRs:
+    - 10.42.0.0/16
+  nodeCIDRs:
+    - 192.168.0.0/16
+
+images:
+  postgres:
+    repository: docker.io/library/postgres
+    tag: "17"
+    pullPolicy: IfNotPresent
+  postfix:
+    repository: agentmail-postfix
+    tag: latest
+    pullPolicy: IfNotPresent
+  dovecot:
+    repository: agentmail-dovecot
+    tag: latest
+    pullPolicy: IfNotPresent
+  directory:
+    repository: agentmail-directory
+    tag: latest
+    pullPolicy: IfNotPresent
+
+postgres:
+  runAsUser: 999
+  runAsGroup: 999
+  port: 5432
+  persistence:
+    size: 10Gi
+    accessMode: ReadWriteOnce
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+postfix:
+  runAsUser: 5001
+  runAsGroup: 5001
+  containerPort: 2525
+  servicePort: 25
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+dovecot:
+  runAsUser: 5000
+  runAsGroup: 5000
+  imap:
+    containerPort: 10143
+    servicePort: 143
+  lmtp:
+    containerPort: 2424
+    servicePort: 24
+  persistence:
+    size: 10Gi
+    accessMode: ReadWriteOnce
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+directory:
+  runAsUser: 5002
+  runAsGroup: 5002
+  containerPort: 50051
+  servicePort: 50051
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
