@@ -42,13 +42,13 @@ Postfix connects to the Dovecot Service port (24), not the container port. Mail 
 
 ## Build
 
-Build from the repository root. The Dockerfiles copy files by those paths.
+From the repository root, `make` builds all three images. The Dockerfiles copy files by paths from that root, so the build context stays there. `make TAG=dev` sets the image tag. `make DOCKER=podman` selects the container tool.
 
 ```shell
-docker build -f postfix/Dockerfile -t agentmail-postfix .
-docker build -f dovecot/Dockerfile -t agentmail-dovecot .
-docker build -f directory/Dockerfile -t agentmail-directory .
+make
 ```
+
+That produces `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`, and the directory gRPC server at `bin/directory`. `make server` generates the protobuf code and builds only that server. Each image is also its own target: `make postfix`, `make dovecot`, or `make directory`. The directory image target generates the protobuf code first.
 
 The chart expects those image names, plus `docker.io/library/postgres:17`.
 

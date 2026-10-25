@@ -1,3 +1,5 @@
+//go:generate protoc -I ../../proto -I /usr/include --go_out=../.. --go_opt=module=agentmail --go-grpc_out=../.. --go-grpc_opt=module=agentmail ../../proto/agentmail/directory/v1/directory.proto
+
 package main
 
 import (
