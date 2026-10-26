@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package agentmail.maildir.v1;
+
+option go_package = "agentmail/gen/agentmail/maildir/v1;maildirv1";
+
+// Maildir removes one mailbox directory. It does not change the user table.
+// The directory service calls it while deleting a user.
+service Maildir {
+  rpc RemoveInbox(RemoveInboxRequest) returns (RemoveInboxResponse);
+}
+
+message RemoveInboxRequest {
+  // Bare mailbox address. A display name is rejected.
+  string address = 1;
+}
+
+message RemoveInboxResponse {}

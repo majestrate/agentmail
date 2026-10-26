@@ -12,14 +12,21 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-type Server struct {
-	directoryv1.UnimplementedDirectoryServer
-	store *Store
-	mail  Maildir
+type userDeleter interface {
+	GetUser(ctx context.Context, id int64, address string) (User, error)
+	DeleteUser(ctx context.Context, id int64) error
 }
 
-func NewServer(store *Store, mail Maildir) *Server {
-	return &Server{store: store, mail: mail}
+type Server struct {
+	directoryv1.UnimplementedDirectoryServer
+	store   *Store
+	users   userDeleter
+	mail    Maildir
+	inboxes InboxRemover
+}
+
+func NewServer(store *Store, mail Maildir, inboxes InboxRemover) *Server {
+	return &Server{store: store, users: store, mail: mail, inboxes: inboxes}
 }
 
 func (s *Server) CreateUser(ctx context.Context, req *directoryv1.CreateUserRequest) (*directoryv1.User, error) {
@@ -113,7 +120,25 @@ func (s *Server) DeleteUser(ctx context.Context, req *directoryv1.DeleteUserRequ
 	if req.GetId() <= 0 {
 		return nil, status.Error(codes.InvalidArgument, "id is required")
 	}
-	return &directoryv1.DeleteUserResponse{}, rpcErr(s.store.DeleteUser(ctx, req.GetId()))
+	if s.inboxes == nil {
+		log.Printf("directory: maildir service is not configured")
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	user, err := s.users.GetUser(ctx, req.GetId(), "")
+	if err != nil {
+		return nil, rpcErr(err)
+	}
+	if err := s.inboxes.RemoveInbox(ctx, user.Address); err != nil {
+		log.Printf("directory: remove inbox for user %d: %v", user.ID, err)
+		return nil, status.Error(codes.Internal, "internal error")
+	}
+	if err := s.users.DeleteUser(ctx, user.ID); err != nil {
+		if recErr := s.mail.CreateInbox(user.Address); recErr != nil {
+			log.Printf("directory: restore inbox for user %d after delete failure: %v", user.ID, recErr)
+		}
+		return nil, rpcErr(err)
+	}
+	return &directoryv1.DeleteUserResponse{}, nil
 }
 
 func (s *Server) CreateDistributionList(ctx context.Context, req *directoryv1.CreateDistributionListRequest) (*directoryv1.DistributionList, error) {

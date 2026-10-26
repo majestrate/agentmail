@@ -321,7 +321,17 @@ Reject values the containers would refuse.
 {{- if eq $relayMesh $relayVPN }}
 {{- fail "relay vpn port must differ from the relay mesh port" }}
 {{- end }}
-{{- $relayTaken := list (int .Values.postfix.containerPort) (int .Values.postfix.submission.containerPort) (int .Values.directory.containerPort) (int .Values.submissionAuth.containerPort) (int .Values.milter.containerPort) (int .Values.postgres.port) (int .Values.dovecot.imap.containerPort) (int .Values.dovecot.lmtp.containerPort) (int .Values.istio.lmtpPort) (int .Values.istio.xdsPort) }}
+{{- $maildirPort := int .Values.maildir.port }}
+{{- if or (lt $maildirPort 1024) (gt $maildirPort 65535) }}
+{{- fail (printf "maildir listen port must be between 1024 and 65535, got %v" $maildirPort) }}
+{{- end }}
+{{- $maildirTaken := list (int .Values.postfix.containerPort) (int .Values.postfix.submission.containerPort) (int .Values.directory.containerPort) (int .Values.submissionAuth.containerPort) (int .Values.milter.containerPort) (int .Values.postgres.port) (int .Values.dovecot.imap.containerPort) (int .Values.dovecot.lmtp.containerPort) (int .Values.istio.lmtpPort) (int .Values.istio.xdsPort) $relayMesh $relayVPN }}
+{{- range $maildirTaken }}
+{{- if eq (int .) $maildirPort }}
+{{- fail (printf "maildir port must differ from %v" .) }}
+{{- end }}
+{{- end }}
+{{- $relayTaken := list (int .Values.postfix.containerPort) (int .Values.postfix.submission.containerPort) (int .Values.directory.containerPort) (int .Values.submissionAuth.containerPort) (int .Values.milter.containerPort) (int .Values.postgres.port) (int .Values.dovecot.imap.containerPort) (int .Values.dovecot.lmtp.containerPort) (int .Values.istio.lmtpPort) (int .Values.istio.xdsPort) $maildirPort }}
 {{- range $relayTaken }}
 {{- if or (eq (int .) $relayMesh) (eq (int .) $relayVPN) }}
 {{- fail (printf "relay listen ports must differ from %v" .) }}

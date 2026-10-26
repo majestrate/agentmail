@@ -123,6 +123,9 @@ service lmtp {
 
 protocol lmtp {
   auth_username_format = %{user | lower}
+  # Postfix opens many LMTP sessions at once. The default cap defers the
+  # extras for several minutes. Stay above the Postfix destination concurrency.
+  lmtp_user_concurrency_limit = 100
 }
 
 !include_try /usr/share/dovecot/protocols.d/*.protocol

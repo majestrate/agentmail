@@ -12,6 +12,7 @@ Transit relay {{ include "agentmail.relayName" . }}:{{ .Values.relay.mesh.servic
 IMAP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.imap.servicePort }} (container {{ .Values.dovecot.imap.containerPort }})
 LMTP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.lmtp.servicePort }} (container {{ .Values.dovecot.lmtp.containerPort }})
 directory {{ include "agentmail.directoryName" . }}:{{ .Values.directory.servicePort }}
+Deleting a user also removes that mailbox. The maildir container in the directory pod listens on 127.0.0.1:{{ .Values.maildir.port }} and is not a Service.
 
 Mail domain {{ .Values.mail.domain }}. Agents on {{ include "agentmail.internalNetworks" . }} may submit mail.
 {{- if .Values.dns.enabled }}

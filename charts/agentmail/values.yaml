@@ -74,9 +74,9 @@ images:
     repository: docker.io/library/postgres
     tag: "17"
     pullPolicy: IfNotPresent
-  # make sets postfix, dovecot, directory, submission-auth, milter, and
-  # relay tags to the Unix time of that invocation. These defaults apply
-  # when the chart is rendered without that override.
+  # make sets postfix, dovecot, directory, submission-auth, milter,
+  # relay, and maildir tags to the Unix time of that invocation. These
+  # defaults apply when the chart is rendered without that override.
   postfix:
     repository: agentmail-postfix
     tag: latest
@@ -99,6 +99,10 @@ images:
     pullPolicy: IfNotPresent
   relay:
     repository: agentmail-relay
+    tag: latest
+    pullPolicy: IfNotPresent
+  maildir:
+    repository: agentmail-maildir
     tag: latest
     pullPolicy: IfNotPresent
 
@@ -193,6 +197,17 @@ directory:
   runAsGroup: 5002
   containerPort: 50051
   servicePort: 50051
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Deletes mailbox directories for the directory service. It runs as vmail
+# in the directory pod and listens on loopback. It is not a Service port.
+maildir:
+  runAsUser: 5000
+  runAsGroup: 5000
+  port: 50056
   resources:
     requests:
       cpu: 50m

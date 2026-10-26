@@ -2,13 +2,20 @@
 
 Mail for agents on an internal network. Distribution lists live in PostgreSQL. Postfix expands a list address to its members and delivers to local mailboxes over LMTP. Dovecot serves IMAP. A gRPC service is the management interface.
 
-Mail is not relayed to the public internet. `default_transport` and `relay_transport` are `error`. Postfix accepts SMTP from loopback plus the configured agent CIDR, and refuses `0.0.0.0/0` and `::/0`.
+Mail is not relayed to the public internet. `default_transport` and `relay_transport` are `error`, and the SMTP listener sets `smtpd_relay_restrictions=reject_unauth_destination`. That listener is `127.0.0.1:25`. With Istio enabled the Postfix Service publishes port 25 and the sidecar forwards mesh clients to it. A milter on port 50053 accepts the null sender or a bare address, and it accepts a recipient only when the address is in `mail.domain` and is a user or a distribution list. Submission on port 587 requires SASL and does not use the milter. The chart refuses `0.0.0.0/0` and `::/0`.
+
+The relay in `relay/` is a synchronous SMTP proxy for a transit pod between the mesh and a VPN path to a public MX. `relay.enabled` defaults to false. Turning it on does not set Postfix `relayhost`, and the error transport stays in place.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
 | `postfix/` | Debian trixie Postfix image. Virtual alias and mailbox maps come from PostgreSQL. |
+| `milter/` | Milter image. Postfix calls it for inbound SMTP. |
+| `cmd/milter` | Milter process entrypoint. |
+| `relay/` | Relay image. Synchronous SMTP proxy, uid 5005. |
+| `cmd/relay` | Relay process entrypoint. |
+| `internal/relay` | SMTP proxy. Two listeners, no queue. |
 | `dovecot/` | Debian trixie Dovecot image. IMAP and LMTP over TCP. Maildir under `/var/mail/vhosts`. |
 | `directory/` | Directory gRPC image. |
 | `cmd/directory` | Process entrypoint. `directory migrate` applies migrations and exits. A normal start migrates, then serves. |
@@ -20,7 +27,7 @@ Mail is not relayed to the public internet. `default_transport` and `relay_trans
 
 ## Mail flow
 
-1. An agent on the internal network delivers SMTP to the Postfix Service on port 25. A mesh client uses submission on port 587 and authenticates as a mailbox user.
+1. Inbound mail arrives on Postfix port 25 from a mesh client, such as a smart host. Postfix calls the milter, which accepts recipients that are users or distribution lists in `mail.domain`. Agents submit mail on port 587 and authenticate as a mailbox user. With Istio disabled, port 25 stays on `127.0.0.1` and is not a Service port.
 2. `virtual_alias_maps` expands a distribution-list address to member addresses.
 3. `virtual_mailbox_maps` accepts users in `mail.domain`.
 4. Postfix delivers with LMTP to the Dovecot Service.
@@ -31,35 +38,46 @@ A user address and a list address cannot be the same value. That keeps alias exp
 
 ## Ports and users
 
-Postfix and Dovecot run as root. Postfix rejects its control command for any other user, and Dovecot's master has to set up its login processes. Mailbox files are still owned by vmail (uid 5000). Directory and Postgres stay unprivileged. Dovecot also listens for IMAPS on 993. Kubernetes Services map SMTP, IMAP, and LMTP.
+Postfix and Dovecot run as root. Postfix rejects its control command for any other user, and Dovecot's master has to set up its login processes. Mailbox files are still owned by vmail (uid 5000). The milter, relay, directory, and Postgres stay unprivileged. Dovecot also listens for IMAPS on 993. Kubernetes Services map submission, IMAP, LMTP, and the milter. With Istio enabled the Postfix Service also maps SMTP. With the relay enabled, its mesh port is a Service and the VPN port is not.
 
 | Process | UID | Container port | Service port |
 | --- | --- | --- | --- |
 | Dovecot master | 0 | 143, 993, 24 | 143, 10024 |
-| Postfix SMTP | 0 | 25 | 25 |
+| Postfix SMTP | 0 | 127.0.0.1:25 | 25 with Istio |
 | Postfix submission | 0 | 587 | 587 |
+| Milter | 5004 | 50053 | 50053 |
+| Relay | 5005 | 50054, 50055 | 50054 |
 | Submission SASL | 5003 | 50052 | 50052 |
 | Directory gRPC | 5002 | 50051 | 50051 |
 | Postgres | 999 | 5432 | 5432 |
 
-Postfix delivers to Dovecot LMTP through the Service on port 10024. Dovecot still listens on port 24, and the sidecar forwards the mesh connection there. Submission on port 587 requires SMTP AUTH. Postfix asks the submission auth daemon over SASL, and that daemon checks `users.password_hash`. The envelope sender has to be that user's address. Port 25 does not require a password. The directory service mounts the same mail volume as Dovecot. Creating a user makes `/var/mail/vhosts/<domain>/<local>/Maildir` with `cur`, `new`, and `tmp`, owned by uid 5000. `/var/mail/vhosts` is mode 2775 and group vmail so uid 5002 can add domains. The directory binary carries file capability `cap_chown`, and that container keeps privilege escalation enabled. With escalation disabled the kernel drops the capability on exec and `chown` to uid 5000 fails. Mail and Postgres each have a 10Gi ReadWriteOnce volume, so those Deployments stay at one replica and use the Recreate strategy.
+Postfix delivers to Dovecot LMTP through the Service on port 10024. Dovecot still listens on port 24, and the sidecar forwards the mesh connection there. Submission on port 587 requires SMTP AUTH. Postfix asks the submission auth daemon over SASL, and that daemon checks `users.password_hash`. The envelope sender has to be that user's address. Port 25 does not require a password. With Istio enabled, a mesh workload may connect to it and the milter decides which recipients exist. The listener rejects destinations outside the virtual mailbox domains. With Istio disabled, that port accepts mail only from inside the Postfix container. Outbound mail uses the error transport. The directory service mounts the same mail volume as Dovecot. Creating a user makes `/var/mail/vhosts/<domain>/<local>/Maildir` with `cur`, `new`, and `tmp`, owned by uid 5000. `/var/mail/vhosts` is mode 2775 and group vmail so uid 5002 can add domains. The directory binary carries file capability `cap_chown`, and that container keeps privilege escalation enabled. With escalation disabled the kernel drops the capability on exec and `chown` to uid 5000 fails. Mail and Postgres each have a 10Gi ReadWriteOnce volume, so those Deployments stay at one replica and use the Recreate strategy.
+
+## Relay
+
+The relay listens twice. The VPN listener accepts SMTP only from `relay.allowCIDRs` and only for recipients in `mail.domain`, then dials the internal Postfix Service on port 25. The mesh listener accepts SMTP from the mesh and dials `relay.outboundHost`. Recipients in `mail.domain` are refused on that listener so a message cannot loop. The mesh sidecar connects from `127.0.0.1`, so that listener is not filtered by source address. A message is acknowledged only after the next hop acknowledges it. The process does not queue, look up MX records, or offer AUTH or STARTTLS.
+
+`relay.enabled` requires Istio. Set `relay.outboundHost` to the public MX address on the VPN and `relay.allowCIDRs` to the CIDRs allowed to open the VPN listener. `0.0.0.0/0` and `::/0` are refused. The chart excludes the VPN port from the sidecar and excludes those destination ranges, plus the MX address, from outbound capture, so the MX dial stays plaintext while the dial to Postfix stays mutual TLS. NetworkPolicy allows the Postfix pod to reach the mesh port and allows `relay.allowCIDRs` to reach the VPN port.
+
+Postfix `default_transport` remains `error`. Pointing internal outbound mail at this relay is a separate change.
 
 ## Build
 
-From the repository root, `make` builds all four images. The Dockerfiles copy files by paths from that root, so the build context stays there. The image tag defaults to the Unix time of that `make` invocation. `make TAG=dev` sets another tag. `make charts` and `make apply` put that same tag on `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`. `make DOCKER=podman` selects the container tool.
+From the repository root, `make` builds all seven images. The Dockerfiles copy files by paths from that root, so the build context stays there. The image tag defaults to the Unix time of that `make` invocation. `make TAG=dev` sets another tag. `make charts` and `make apply` put that same tag on `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`. `make DOCKER=podman` selects the container tool.
 
 ```shell
 make
 ```
 
-That produces `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`, the directory gRPC server at `bin/directory`, and the management client at `bin/agentmail`. `make server` generates the protobuf code and builds those two binaries. Each image is also its own target: `make postfix`, `make dovecot`, `make directory`, or `make submission-auth`. The directory image target generates the protobuf code first. The directory image includes `/usr/local/bin/agentmail`.
+That produces `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`, the directory gRPC server at `bin/directory`, and the management client at `bin/agentmail`. `make server` generates the protobuf code and builds those two binaries. Each image is also its own target: `make postfix`, `make dovecot`, `make directory`, `make submission-auth`, `make milter`, `make relay`, or `make maildir`. The directory and maildir image targets generate the protobuf code first. The directory image includes `/usr/local/bin/agentmail`.
 
-`make charts` compiles `charts/agentmail` to `dist/agentmail.yaml` and the Vaultwarden Kubernetes secrets chart 2.1.0 to `dist/vaultwarden-kubernetes-secrets.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. `VAULTWARDEN_SERVER_URL` is required and must be an `https` URL. The chart does not store it.
+`make charts` compiles `charts/agentmail` to `dist/agentmail.yaml` and the Vaultwarden Kubernetes secrets chart 2.1.0 to `dist/vaultwarden-kubernetes-secrets.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. `VAULTWARDEN_SERVER_URL` is required and must be an `https` URL. The chart does not store it. `MAIL_DOMAIN` is required. It is a lowercase DNS name, and it sets `mail.domain`. `mail.hostname` stays the value in the chart.
 
 ```shell
 make charts \
   DOCKER_REGISTRY="$DOCKER_REGISTRY" \
-  VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL"
+  VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
+  MAIL_DOMAIN="$MAIL_DOMAIN"
 ```
 
 `VAULTWARDEN_ORGANIZATION_ID` and `VAULTWARDEN_COLLECTION_ID` are optional. When set, they are passed to the sync chart.
@@ -70,6 +88,7 @@ make charts \
 make apply \
   DOCKER_REGISTRY="$DOCKER_REGISTRY" \
   VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
+  MAIL_DOMAIN="$MAIL_DOMAIN" \
   BW_CLIENTID="$BW_CLIENTID" \
   BW_CLIENTSECRET="$BW_CLIENTSECRET" \
   VAULTWARDEN__MASTERPASSWORD="$VAULTWARDEN__MASTERPASSWORD"
@@ -91,9 +110,9 @@ make helm-install \
 make teardown
 ```
 
-`DOCKER_REGISTRY` is the registry host or host/path for the images this repository builds. The chart does not store it. An empty value leaves every repository as written. `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth` are prefixed with it. `docker.io/library/postgres:17` stays on Docker Hub.
+`DOCKER_REGISTRY` is the registry host or host/path for the images this repository builds. The chart does not store it. An empty value leaves every repository as written. `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir` are prefixed with it. `docker.io/library/postgres:17` stays on Docker Hub.
 
-`make push` builds `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`, tags each as `$DOCKER_REGISTRY/<name>:$TAG`, and pushes those tags. `DOCKER_REGISTRY` is required. It is a registry host or host/path, with no URL scheme. One trailing slash is removed.
+`make push` builds `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`, tags each as `$DOCKER_REGISTRY/<name>:$TAG`, and pushes those tags. `DOCKER_REGISTRY` is required. It is a registry host or host/path, with no URL scheme. One trailing slash is removed. Postgres is not pushed.
 
 ```shell
 make push DOCKER_REGISTRY="$DOCKER_REGISTRY"
@@ -156,30 +175,33 @@ Point `networkPolicy.nodeCIDRs` at the node network so kubelet probes are allowe
 ```shell
 helm install agentmail charts/agentmail -n agentmail --create-namespace \
   --set networkPolicy.nodeCIDRs[0]=NODE_CIDR \
-  --set images.registry="$DOCKER_REGISTRY"
+  --set images.registry="$DOCKER_REGISTRY" \
+  --set-string mail.domain="$MAIL_DOMAIN"
 ```
 
-`DOCKER_REGISTRY` is a registry host or host/path, with no URL scheme and no trailing slash. It is prefixed onto `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`. The migration init container uses the same directory image. `docker.io/library/postgres:17` is left unchanged. Pods that pull those four images reference image pull Secret `agentmail-registry` (override with `vaultwarden.registrySecretName`). That Secret is the docker config the sync service writes. The chart does not store the registry username or password.
+`DOCKER_REGISTRY` is a registry host or host/path, with no URL scheme and no trailing slash. It is prefixed onto `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`. The migration init container uses the same directory image. `docker.io/library/postgres:17` is left unchanged. Pods that pull those seven images reference image pull Secret `agentmail-registry` (override with `vaultwarden.registrySecretName`). That Secret is the docker config the sync service writes. The chart does not store the registry username or password.
 
-`charts/agentmail/values.yaml` holds the mail domain, hostname, image names, ports, volume sizes, and the Vaultwarden Secret key names. `mail.domain` defaults to `example.com`. A release whose name contains `agentmail` keeps that name, so the default Secret is `agentmail-mail-db`. Set `vaultwarden.secretName` when the item uses another `secret-name`.
+`charts/agentmail/values.yaml` holds the mail hostname, image names, ports, volume sizes, and the Vaultwarden Secret key names. `mail.domain` defaults to `mail.internal` for a direct render. `make charts` and `make apply` replace it with `MAIL_DOMAIN`. `mail.hostname` stays `mail.internal` unless the chart value is changed. A release whose name contains `agentmail` keeps that name, so the default Secret is `agentmail-mail-db`. Set `vaultwarden.secretName` when the item uses another `secret-name`.
 
-After install, agents on the agent CIDR use SMTP on Service `agentmail-postfix` port 25 and IMAP on `agentmail-dovecot` port 143.
+After install, agents submit mail on Service `agentmail-postfix` port 587 and read IMAP on `agentmail-dovecot` port 143. With Istio enabled, mesh clients deliver inbound mail to `agentmail-postfix` port 25.
 
 ## Istio
 
-Istio authenticates the directory gRPC port, Postfix submission, the SASL hop from Postfix to the submission auth daemon, and the LMTP hop from Postfix to Dovecot. Directory, Postfix, Dovecot, and the submission auth daemon are injected. Postgres, SMTP on port 25, and IMAP stay outside mutual TLS. Postgres dials from those pods bypass the proxy. `istio.enabled` defaults to true. The LMTP mesh port is `istio.lmtpPort` (10024). Dovecot keeps listening on 24, and the Dovecot sidecar accepts 10024 and forwards it to `127.0.0.1:24`. That ingress requires STRICT mutual TLS. Submission on 587 also requires STRICT mutual TLS, and the SASL daemon accepts it only from Postfix. IMAP on 143 and IMAPS on 993 stay plaintext through the Dovecot sidecar. Port 25 stays plaintext.
+Istio authenticates the directory gRPC port, Postfix submission, inbound SMTP, the milter, the relay mesh port when the relay is enabled, the SASL hop from Postfix to the submission auth daemon, and the LMTP hop from Postfix to Dovecot. Directory, Postfix, Dovecot, the milter, and the submission auth daemon are injected, and so is the relay when it is enabled. Postgres and IMAP stay outside mutual TLS. The relay VPN port is excluded from the sidecar. Port 25 stays bound to loopback. The Postfix sidecar accepts it and forwards mesh clients to `127.0.0.1:25`. Postgres dials from those pods bypass the proxy. `istio.enabled` defaults to true. The LMTP mesh port is `istio.lmtpPort` (10024). Dovecot keeps listening on 24, and the Dovecot sidecar accepts 10024 and forwards it to `127.0.0.1:24`. That ingress requires STRICT mutual TLS. Submission on 587 and SMTP on 25 also require STRICT mutual TLS on those ports only. The SASL daemon and the milter accept connections only from Postfix. IMAP on 143 and IMAPS on 993 stay plaintext through the Dovecot sidecar. With Istio disabled, port 25 is not published.
 
 Install the sidecar profile before applying this chart. Ambient mode is a different data plane and is not the one this chart uses. `make helm-install` installs Istio 1.31.3 from `https://blob.istio.io/istio-release/charts`: `istio-base` with `defaultRevision=default`, then `istiod`, both in namespace `istio-system`. Mesh pods carry the label `istio.io/rev` (`istio.revision`, default `default`) because that install selects pods by label. The inject annotation does not enroll a pod in an unlabeled namespace.
 
-Service ports that carry SMTP, submission, LMTP, IMAP, or SASL are named with a `tcp-` prefix. Istio treats any other name as a protocol to sniff, and it waits for the client to send the first bytes. LMTP and SMTP never do: the server writes the banner first, so the connection opens and then sits there with no response. The directory port stays named `grpc`, which Istio already recognizes. Container port names stay `smtp`, `submission`, `lmtp`, `imap`, and `sasl` so the probes still address them.
+Service ports that carry SMTP, submission, LMTP, IMAP, SASL, the milter, or the relay are named with a `tcp-` prefix (`tcp-smtp`, `tcp-submission`, `tcp-lmtp`, `tcp-imap`, `tcp-sasl`, `tcp-milter`, `tcp-relay`). Istio treats any other name as a protocol to sniff, and it waits for the client to send the first bytes. SMTP, LMTP, submission, and the relay never do: the server writes the banner first, so the connection opens and then sits there with no response. The directory port stays named `grpc`, which Istio already recognizes. Container port names stay `smtp`, `submission`, `lmtp`, `imap`, `sasl`, `milter`, and `relay` so the probes still address them. The VPN container port is named `vpn` and is not a Service port.
 
-The chart installs ServiceAccounts for directory, Postfix, Dovecot, and submission auth. Directory gRPC is `STRICT` with `ISTIO_MUTUAL`. Submission uses a Postfix `PeerAuthentication` that is `STRICT` only on port 587, and a `DestinationRule` of `ISTIO_MUTUAL` on that Service port. The submission auth daemon is `STRICT` on port 50052. LMTP uses a Dovecot `PeerAuthentication` that is `STRICT` only on port 10024, a `DestinationRule` of `ISTIO_MUTUAL` on that Service port, and a Dovecot `Sidecar` whose LMTP ingress is 10024. NetworkPolicy allows Postfix to reach the SASL daemon on 50052 and Dovecot on 10024, and those pods to reach `istiod` on port 15012. Set `istio.enabled` to false to render the chart without those resources. With Istio disabled, the LMTP Service port stays 24 and submission stays on 587 without mutual TLS. SASL is still required.
+The chart installs ServiceAccounts for directory, Postfix, Dovecot, the milter, and submission auth, and for the relay when it is enabled. Directory gRPC is `STRICT` with `ISTIO_MUTUAL`. Postfix uses a `PeerAuthentication` that is `STRICT` only on ports 25 and 587, and a `DestinationRule` of `ISTIO_MUTUAL` on those Service ports. The workload is not `STRICT`, so the kubelet probe of submission stays allowed. The submission auth daemon is `STRICT` on port 50052. The milter is `STRICT` on port 50053. The relay, when enabled, is `STRICT` only on its mesh port, with `ISTIO_MUTUAL` on that Service port. Its VPN port stays plaintext. LMTP uses a Dovecot `PeerAuthentication` that is `STRICT` only on port 10024, a `DestinationRule` of `ISTIO_MUTUAL` on that Service port, and a Dovecot `Sidecar` whose LMTP ingress is 10024. The Postfix sidecar ingress for SMTP is port 25 with `defaultEndpoint` `127.0.0.1:25`. NetworkPolicy allows any namespace to reach Postfix port 25 when Istio is enabled, and allows Postfix to reach the milter on 50053, the SASL daemon on 50052, Dovecot on 10024, and, when the relay is enabled, the relay mesh port. Those pods reach `istiod` on port 15012. The milter accepts connections only from the Postfix pod. The relay mesh port does too. Set `istio.enabled` to false to render the chart without those resources. With Istio disabled, the LMTP Service port stays 24, port 25 is not on the Service, the relay cannot be enabled, and submission stays on 587 without mutual TLS. SASL and the milter are still required.
 
 Apply the mail chart after `istiod` is ready. The directory pod has to be created again once the injector webhook exists, or the gRPC port stays plaintext.
 
 ## Management client
 
 `agentmail` calls the directory service in plaintext. Run it in the directory container so the sidecar can present a mesh certificate. Dial the Service DNS. A connection to `127.0.0.1` does not pass through the sidecar.
+
+`users delete` removes the mailbox before it removes the user row. The directory container calls a second gRPC service, `agentmail-maildir`, in the same pod. That process runs as uid 5000, listens on `127.0.0.1:50056`, and deletes `MAIL_HOME_ROOT/<domain>/<local>`. It is not a Service port. A missing mailbox is already cleaned up. If the database delete fails afterward, the directory creates an empty mailbox again and leaves the user row in place.
 
 ```shell
 kubectl exec -n agentmail deploy/agentmail-directory -c directory -- agentmail users ls

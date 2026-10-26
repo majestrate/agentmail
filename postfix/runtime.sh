@@ -1,9 +1,11 @@
 #!/bin/bash
 # Configure Postfix from the environment, then start it. The postfix control
 # command requires root. Database passwords and custom SQL arrive as standard
-# base64. SMTP listens on POSTFIX_SMTP_PORT (default 25). When
-# POSTFIX_SUBMISSION_PORT is set, that port requires SASL and asks the
-# submission auth daemon at SUBMISSION_AUTH_HOST:SUBMISSION_AUTH_PORT.
+# base64. SMTP listens on 127.0.0.1:POSTFIX_SMTP_PORT (default 25). That
+# listener asks the milter at MILTER_HOST:MILTER_PORT and rejects destinations
+# this host does not accept. When POSTFIX_SUBMISSION_PORT is set, that port
+# listens on every interface, requires SASL, and asks the submission auth
+# daemon at SUBMISSION_AUTH_HOST:SUBMISSION_AUTH_PORT.
 
 set -euo pipefail
 
@@ -65,6 +67,7 @@ write_map() {
 configure_postfix() {
     local host port user dbname password query hosts myhostname
     local smtp_port lmtp_host lmtp_port domains domain joined net
+    local milter_host milter_port
     local -a nets=()
 
     host=${POSTFIX_PGSQL_HOST:?POSTFIX_PGSQL_HOST is required}
@@ -89,6 +92,14 @@ configure_postfix() {
     lmtp_port=${DOVECOT_LMTP_PORT:-24}
     require_line DOVECOT_LMTP_HOST "$lmtp_host"
     [[ "$lmtp_port" =~ ^[0-9]+$ ]] || die "DOVECOT_LMTP_PORT must be a number"
+
+    milter_host=${MILTER_HOST:?MILTER_HOST is required}
+    milter_port=${MILTER_PORT:?MILTER_PORT is required}
+    require_line MILTER_HOST "$milter_host"
+    require_line MILTER_PORT "$milter_port"
+    [[ "$milter_host" =~ ^[A-Za-z0-9._-]+$ ]] || die "MILTER_HOST must be a hostname"
+    [[ "$milter_port" =~ ^[0-9]+$ && "$milter_port" -ge 1 && "$milter_port" -le 65535 ]] \
+        || die "MILTER_PORT must be a port number"
 
     if [[ -v POSTFIX_PGSQL_QUERY_B64 ]]; then
         query=$(b64dec POSTFIX_PGSQL_QUERY_B64 "$POSTFIX_PGSQL_QUERY_B64")
@@ -143,6 +154,8 @@ configure_postfix() {
     postconf -e "myhostname=${myhostname}"
     postconf -e 'myorigin=$myhostname'
     postconf -e 'mydestination=localhost'
+    # all keeps submission reachable. The SMTP service below names 127.0.0.1,
+    # which overrides this for that listener only.
     postconf -e 'inet_interfaces=all'
     postconf -e "mynetworks=${mynetworks}"
     postconf -e 'smtpd_relay_restrictions=permit_mynetworks, reject_unauth_destination'
@@ -154,6 +167,12 @@ configure_postfix() {
     postconf -e "virtual_alias_maps=proxy:pgsql:${ALIAS_MAP}"
     postconf -e "virtual_mailbox_maps=proxy:pgsql:${MAILBOX_MAP}"
     postconf -e "virtual_transport=lmtp:inet:${lmtp_host}:${lmtp_port}"
+    # One session per recipient, started at full concurrency, so a list
+    # delivery writes different mailboxes together. Dovecot allows 100
+    # concurrent deliveries per user; this stays under that cap.
+    postconf -e 'lmtp_destination_recipient_limit=1'
+    postconf -e 'lmtp_destination_concurrency_limit=50'
+    postconf -e 'lmtp_initial_destination_concurrency=50'
     # Cluster DNS answers the A record and returns "host not found" for AAAA.
     # With inet_protocols=all that AAAA error bounces LMTP (dsn 5.4.4) before
     # Postfix uses the IPv4 address. lmtp_address_preference does not skip
@@ -161,12 +180,26 @@ configure_postfix() {
     postconf -e 'inet_protocols=ipv4'
     postconf -e 'maillog_file=/dev/stdout'
     postconf -e 'smtpd_banner=$myhostname ESMTP'
-    postconf -F '*/*/chroot=n'
+    # Empty on every listener. The loopback SMTP service below sets its own
+    # milter. Submission must not inherit one.
+    postconf -e 'smtpd_milters='
+    postconf -e 'non_smtpd_milters='
+    postconf -e 'milter_protocol=6'
+    postconf -e 'milter_default_action=tempfail'
 
-    # The packaged "smtp" service is port 25. Replace it with POSTFIX_SMTP_PORT.
-    postconf -M "${smtp_port}/inet=${smtp_port} inet n - n - - smtpd"
-    postconf -MX smtp/inet || true
+    # The packaged "smtp" service listens on every interface. Replace it with
+    # a loopback listener. inet_interfaces stays "all" so submission does not
+    # follow this address.
+    if postconf -M smtp/inet >/dev/null 2>&1; then
+        postconf -MX smtp/inet
+    fi
+    if [[ "$smtp_port" != "25" ]] && postconf -M "${smtp_port}/inet" >/dev/null 2>&1; then
+        postconf -MX "${smtp_port}/inet"
+    fi
+    postconf -M "127.0.0.1:${smtp_port}/inet=127.0.0.1:${smtp_port} inet n - n - - smtpd"
+    configure_inbound "$smtp_port" "$milter_host" "$milter_port"
     configure_submission "$smtp_port"
+    postconf -F '*/*/chroot=n'
 
     local imports
     imports=$(postconf -h import_environment)
@@ -177,13 +210,27 @@ configure_postfix() {
 
     postfix check
     if [[ -n "${POSTFIX_SUBMISSION_PORT:-}" ]]; then
-        printf 'postfix: listen %s, submission %s sasl inet:%s:%s, lmtp %s:%s, domains %s, agent networks %s\n' \
-            "$smtp_port" "$POSTFIX_SUBMISSION_PORT" "$SUBMISSION_AUTH_HOST" "$SUBMISSION_AUTH_PORT" \
+        printf 'postfix: listen 127.0.0.1:%s milter inet:%s:%s, submission %s sasl inet:%s:%s, lmtp %s:%s, domains %s, agent networks %s\n' \
+            "$smtp_port" "$milter_host" "$milter_port" \
+            "$POSTFIX_SUBMISSION_PORT" "$SUBMISSION_AUTH_HOST" "$SUBMISSION_AUTH_PORT" \
             "$lmtp_host" "$lmtp_port" "$joined" "${nets[*]}"
     else
-        printf 'postfix: listen %s, lmtp %s:%s, domains %s, agent networks %s\n' \
-            "$smtp_port" "$lmtp_host" "$lmtp_port" "$joined" "${nets[*]}"
+        printf 'postfix: listen 127.0.0.1:%s milter inet:%s:%s, lmtp %s:%s, domains %s, agent networks %s\n' \
+            "$smtp_port" "$milter_host" "$milter_port" \
+            "$lmtp_host" "$lmtp_port" "$joined" "${nets[*]}"
     fi
+}
+
+# The loopback SMTP listener is the inbound path. The sidecar reaches it from
+# 127.0.0.1, so permit_mynetworks here would let every mesh client relay.
+# Foreign destinations are rejected on this listener. The error transport
+# remains the outbound deny. The milter is not attached to submission.
+configure_inbound() {
+    local smtp_port=$1 milter_host=$2 milter_port=$3
+    local service="127.0.0.1:${smtp_port}"
+    postconf -P "${service}/inet/smtpd_relay_restrictions=reject_unauth_destination"
+    postconf -P "${service}/inet/smtpd_milters=inet:${milter_host}:${milter_port}"
+    postconf -F "${service}/inet/chroot=n"
 }
 
 # Submission is a separate smtpd. It rejects mail that has not authenticated.

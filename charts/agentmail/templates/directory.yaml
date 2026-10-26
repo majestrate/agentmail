@@ -52,6 +52,8 @@ spec:
           env:
             - name: AGENTMAIL_SERVER
               value: {{ printf "%s.%s.svc.cluster.local:%v" (include "agentmail.directoryName" .) .Release.Namespace .Values.directory.servicePort | quote }}
+            - name: MAILDIR_SERVER
+              value: {{ printf "127.0.0.1:%v" (int .Values.maildir.port) | quote }}
             {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
           securityContext:
             # The directory binary has cap_chown in its file capabilities.
@@ -74,6 +76,32 @@ spec:
               port: grpc
           resources:
             {{- toYaml .Values.directory.resources | nindent 12 }}
+        - name: maildir
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.maildir) }}
+          imagePullPolicy: {{ .Values.images.maildir.pullPolicy }}
+          env:
+            - name: MAILDIR_LISTEN
+              value: {{ printf "127.0.0.1:%v" (int .Values.maildir.port) | quote }}
+            - name: MAIL_HOME_ROOT
+              value: {{ .Values.mail.homeRoot | quote }}
+          securityContext:
+            runAsUser: {{ .Values.maildir.runAsUser }}
+            runAsGroup: {{ .Values.maildir.runAsGroup }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: mail
+              mountPath: /var/mail
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", {{ printf "echo >/dev/tcp/127.0.0.1/%v" (int .Values.maildir.port) | quote }}]
+          livenessProbe:
+            exec:
+              command: ["bash", "-c", {{ printf "echo >/dev/tcp/127.0.0.1/%v" (int .Values.maildir.port) | quote }}]
+          resources:
+            {{- toYaml .Values.maildir.resources | nindent 12 }}
       volumes:
         - name: mail
           persistentVolumeClaim:

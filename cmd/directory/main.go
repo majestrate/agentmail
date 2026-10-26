@@ -17,9 +17,12 @@ import (
 	"agentmail/internal/directory"
 	"agentmail/internal/migrate"
 
+	maildirv1 "agentmail/gen/agentmail/maildir/v1"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
@@ -64,17 +67,28 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	maildirAddr := getenv("MAILDIR_SERVER", "127.0.0.1:50056")
+	if err := waitForTCP(ctx, maildirAddr, 15*time.Second); err != nil {
+		log.Fatal(err)
+	}
+	maildirConn, err := grpc.NewClient(maildirAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer maildirConn.Close()
+
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	// Plaintext. The directory pod's Istio sidecar authenticates clients.
+	// Mailbox removal is a second plaintext service on 127.0.0.1 in this pod.
 	server := grpc.NewServer()
 	directoryv1.RegisterDirectoryServer(server, directory.NewServer(directory.NewStore(pool), directory.Maildir{
 		Root: mailRoot,
 		UID:  mailUID,
 		GID:  mailGID,
-	}))
+	}, directory.MaildirClient{API: maildirv1.NewMaildirClient(maildirConn)}))
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(server, healthServer)
@@ -87,6 +101,23 @@ func main() {
 	log.Printf("directory listening on %s", listenAddr)
 	if err := server.Serve(lis); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func waitForTCP(ctx context.Context, addr string, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
+	var err error
+	for {
+		var conn net.Conn
+		conn, err = net.DialTimeout("tcp", addr, time.Second)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return fmt.Errorf("maildir service %s: %w", addr, err)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 

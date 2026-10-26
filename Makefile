@@ -13,15 +13,16 @@
 #   make TAG=dev
 #   make DOCKER=podman
 #
-# TAG defaults to the Unix time of this make invocation. The four built
-# images and the chart tags for those images share that value. Postgres
-# stays at the tag in values.yaml.
+# TAG defaults to the Unix time of this make invocation. The built images
+# and the chart tags for those images share that value. Postgres stays at
+# the tag in values.yaml.
 #
 # make charts renders charts/agentmail to dist/agentmail.yaml and the
 # vaultwarden-kubernetes-secrets chart to
 # dist/vaultwarden-kubernetes-secrets.yaml.
 #   DOCKER_REGISTRY=$DOCKER_REGISTRY \
 #   VAULTWARDEN_SERVER_URL=$VAULTWARDEN_SERVER_URL \
+#   MAIL_DOMAIN=$MAIL_DOMAIN \
 #   make charts
 # make apply installs the external charts first, then renders and applies
 # the mail chart. The order is helm-add, helm-update, helm-install
@@ -42,12 +43,15 @@
 # make apply depends on it. A second run upgrades those releases in place
 # to the pinned versions. Istio stays on the sidecar profile.
 # VAULTWARDEN_SERVER_URL is required.
+# MAIL_DOMAIN is required. It sets mail.domain. mail.hostname stays the
+# chart value.
 # make teardown reverses apply. It deletes the mail namespace while istiod
 # is still installed, uninstalls vaultwarden-kubernetes-secrets and deletes
 # that namespace, then uninstalls istiod and istio-base and deletes the
 # Istio namespace. Missing releases and namespaces are ignored. It refuses
 # default, kube-system, kube-public, and kube-node-lease.
-# make push tags the four built images with DOCKER_REGISTRY and pushes them.
+# make push tags the built images with DOCKER_REGISTRY and pushes them.
+# Postgres is not pushed.
 #   DOCKER_REGISTRY=$DOCKER_REGISTRY make push
 
 DOCKER ?= docker
@@ -59,6 +63,9 @@ TAG ?= latest
 # make push requires it. One trailing slash is removed.
 DOCKER_REGISTRY ?=
 DOCKER_REGISTRY_TRIMMED := $(patsubst %/,%,$(DOCKER_REGISTRY))
+# Virtual mailbox domain. make charts requires a lowercase DNS name and
+# sets mail.domain from it. mail.hostname is unchanged.
+MAIL_DOMAIN ?=
 RELEASE ?= agentmail
 NAMESPACE ?= agentmail
 VWK8S_CHART := oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets
@@ -82,10 +89,10 @@ HELM_VERSION := v3.19.0
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 export PATH := $(shell $(GO) env GOPATH)/bin:$(PATH)
 
-.PHONY: all postfix dovecot directory submission-auth server generate clean ensure-tools charts apply teardown push push-check \
+.PHONY: all postfix dovecot directory submission-auth milter relay maildir server generate clean ensure-tools charts apply teardown push push-check \
 	helm-ensure helm-add helm-update helm-install helm-install-istio helm-install-vaultwarden vaultwarden-secret
 
-all: postfix dovecot directory submission-auth server
+all: postfix dovecot directory submission-auth milter relay maildir server
 
 postfix:
 	$(DOCKER) build -f $(ROOT)/postfix/Dockerfile -t agentmail-postfix:$(TAG) $(ROOT)
@@ -98,6 +105,15 @@ directory: generate
 
 submission-auth:
 	$(DOCKER) build -f $(ROOT)/submission-auth/Dockerfile -t agentmail-submission-auth:$(TAG) $(ROOT)
+
+milter:
+	$(DOCKER) build -f $(ROOT)/milter/Dockerfile -t agentmail-milter:$(TAG) $(ROOT)
+
+relay:
+	$(DOCKER) build -f $(ROOT)/relay/Dockerfile -t agentmail-relay:$(TAG) $(ROOT)
+
+maildir: generate
+	$(DOCKER) build -f $(ROOT)/maildir/Dockerfile -t agentmail-maildir:$(TAG) $(ROOT)
 
 server: $(ROOT)/bin/directory $(ROOT)/bin/agentmail
 
@@ -113,20 +129,30 @@ generate: ensure-tools
 charts: helm-ensure
 	@test -n "$(VAULTWARDEN_SERVER_URL_TRIMMED)" || { echo "VAULTWARDEN_SERVER_URL is required to render the vaultwarden chart" >&2; exit 1; }
 	@printf '%s' '$(VAULTWARDEN_SERVER_URL_TRIMMED)' | grep -Eq '^https://[^[:space:]]+$$' || { echo "VAULTWARDEN_SERVER_URL must be an https URL" >&2; exit 1; }
+	@test -n "$(MAIL_DOMAIN)" || { echo "MAIL_DOMAIN is required to render the mail chart" >&2; exit 1; }
+	@printf '%s' '$(MAIL_DOMAIN)' | grep -Eq '^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$$' || { echo "MAIL_DOMAIN must be a lowercase DNS name" >&2; exit 1; }
 	mkdir -p $(ROOT)/dist
 	$(HELM) lint $(ROOT)/charts/agentmail \
-		--set-string images.registry='$(DOCKER_REGISTRY)' \
-		--set-string images.postfix.tag='$(TAG)' \
-		--set-string images.dovecot.tag='$(TAG)' \
-		--set-string images.directory.tag='$(TAG)' \
-		--set-string images.submissionAuth.tag='$(TAG)'
-	$(HELM) template $(RELEASE) $(ROOT)/charts/agentmail \
-		--namespace $(NAMESPACE) \
+		--set-string mail.domain='$(MAIL_DOMAIN)' \
 		--set-string images.registry='$(DOCKER_REGISTRY)' \
 		--set-string images.postfix.tag='$(TAG)' \
 		--set-string images.dovecot.tag='$(TAG)' \
 		--set-string images.directory.tag='$(TAG)' \
 		--set-string images.submissionAuth.tag='$(TAG)' \
+		--set-string images.milter.tag='$(TAG)' \
+		--set-string images.relay.tag='$(TAG)' \
+		--set-string images.maildir.tag='$(TAG)'
+	$(HELM) template $(RELEASE) $(ROOT)/charts/agentmail \
+		--namespace $(NAMESPACE) \
+		--set-string mail.domain='$(MAIL_DOMAIN)' \
+		--set-string images.registry='$(DOCKER_REGISTRY)' \
+		--set-string images.postfix.tag='$(TAG)' \
+		--set-string images.dovecot.tag='$(TAG)' \
+		--set-string images.directory.tag='$(TAG)' \
+		--set-string images.submissionAuth.tag='$(TAG)' \
+		--set-string images.milter.tag='$(TAG)' \
+		--set-string images.relay.tag='$(TAG)' \
+		--set-string images.maildir.tag='$(TAG)' \
 		> $(ROOT)/dist/agentmail.yaml.tmp
 	mv $(ROOT)/dist/agentmail.yaml.tmp $(ROOT)/dist/agentmail.yaml
 	@set -eu; \
@@ -314,9 +340,9 @@ vaultwarden-secret:
 	fi
 
 # push-check is first so a missing registry fails before the image builds.
-push: push-check postfix dovecot directory submission-auth
+push: push-check postfix dovecot directory submission-auth milter relay maildir
 	@set -eu; \
-	for name in agentmail-postfix agentmail-dovecot agentmail-directory agentmail-submission-auth; do \
+	for name in agentmail-postfix agentmail-dovecot agentmail-directory agentmail-submission-auth agentmail-milter agentmail-relay agentmail-maildir; do \
 		$(DOCKER) tag "$$name:$(TAG)" "$(DOCKER_REGISTRY_TRIMMED)/$$name:$(TAG)"; \
 		$(DOCKER) push "$(DOCKER_REGISTRY_TRIMMED)/$$name:$(TAG)"; \
 	done
@@ -344,11 +370,11 @@ $(ROOT)/bin/agentmail: generate
 
 clean:
 	rm -rf $(ROOT)/bin
-	rm -f $(ROOT)/gen/agentmail/directory/v1/*.pb.go
+	rm -f $(ROOT)/gen/agentmail/directory/v1/*.pb.go $(ROOT)/gen/agentmail/maildir/v1/*.pb.go
 	rm -f $(ROOT)/dist/agentmail.yaml $(ROOT)/dist/agentmail.yaml.tmp \
 		$(ROOT)/dist/vaultwarden-kubernetes-secrets.yaml $(ROOT)/dist/vaultwarden-kubernetes-secrets.yaml.tmp
 	@set -eu; \
-	for image in agentmail-postfix agentmail-dovecot agentmail-directory agentmail-submission-auth; do \
+	for image in agentmail-postfix agentmail-dovecot agentmail-directory agentmail-submission-auth agentmail-milter agentmail-relay agentmail-maildir; do \
 		ids=$$($(DOCKER) ps -aq --filter "ancestor=$$image" || true); \
 		if [ -n "$$ids" ]; then $(DOCKER) rm -f $$ids; fi; \
 		imgids=$$($(DOCKER) images -q "$$image" || true); \
