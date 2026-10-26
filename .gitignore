@@ -79,3 +79,7 @@ conversation-context.txt
 
 # rendered Helm chart
 /dist/
+
+
+# env shell source
+.env.sh
