@@ -100,19 +100,85 @@ imagePullSecrets:
 {{- printf "%s-submission-auth" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "agentmail.milterName" -}}
+{{- printf "%s-milter" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.relayName" -}}
+{{- printf "%s-relay" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.clusterFQDN" -}}
+{{- printf "%s.%s.svc.%s" .name .context.Release.Namespace .context.Values.dns.clusterDomain }}
+{{- end }}
+
 {{/*
 Pod annotations. Directory joins the mesh for gRPC. Postfix and Dovecot
-join it for submission and LMTP. The submission auth daemon joins it so
-Postfix can reach SASL. Postgres stays out, and Postgres dials bypass the proxy.
+join it for submission, inbound SMTP, and LMTP. The submission auth daemon,
+the milter, and the relay join it so Postfix can reach them. Postgres stays
+out, and Postgres dials bypass the proxy.
 */}}
+{{- define "agentmail.meshMember" -}}
+{{- if and .context.Values.istio.enabled (or (eq .component "directory") (eq .component "postfix") (eq .component "dovecot") (eq .component "submission-auth") (eq .component "milter") (eq .component "relay")) -}}
+true
+{{- end -}}
+{{- end }}
+
 {{- define "agentmail.meshAnnotations" -}}
-{{- if and .context.Values.istio.enabled (or (eq .component "directory") (eq .component "postfix") (eq .component "dovecot") (eq .component "submission-auth")) -}}
+{{- if eq (include "agentmail.meshMember" .) "true" -}}
 sidecar.istio.io/inject: "true"
 sidecar.istio.io/nativeSidecar: "true"
 traffic.sidecar.istio.io/excludeOutboundPorts: {{ .context.Values.postgres.port | quote }}
 {{- else -}}
 sidecar.istio.io/inject: "false"
 {{- end -}}
+{{- end }}
+
+{{/*
+Pod label that selects the revisioned sidecar injector. The injector
+matches labels, so the inject annotation on its own does not enroll a pod
+when the namespace has no Istio label.
+*/}}
+{{- define "agentmail.meshPodLabels" -}}
+{{- if eq (include "agentmail.meshMember" .) "true" }}
+istio.io/rev: {{ .context.Values.istio.revision | quote }}
+{{- end }}
+{{- end }}
+
+{{- define "agentmail.relayHostname" -}}
+{{- if .Values.relay.hostname -}}
+{{- .Values.relay.hostname -}}
+{{- else -}}
+{{- .Values.mail.hostname -}}
+{{- end -}}
+{{- end }}
+
+{{- define "agentmail.relayDialHost" -}}
+{{- if contains ":" .Values.relay.outboundHost -}}
+{{- printf "[%s]" .Values.relay.outboundHost -}}
+{{- else -}}
+{{- .Values.relay.outboundHost -}}
+{{- end -}}
+{{- end }}
+
+{{- define "agentmail.relayHostCIDR" -}}
+{{- if contains ":" .Values.relay.outboundHost -}}
+{{- printf "%s/128" .Values.relay.outboundHost -}}
+{{- else -}}
+{{- printf "%s/32" .Values.relay.outboundHost -}}
+{{- end -}}
+{{- end }}
+
+{{- define "agentmail.relayExcludeRanges" -}}
+{{- $ranges := list -}}
+{{- range .Values.relay.allowCIDRs }}
+{{- $ranges = append $ranges . }}
+{{- end }}
+{{- $host := include "agentmail.relayHostCIDR" . }}
+{{- if not (has $host $ranges) }}
+{{- $ranges = append $ranges $host }}
+{{- end }}
+{{- join "," $ranges -}}
 {{- end }}
 
 {{/*
@@ -191,10 +257,14 @@ Database role, database name, and base64 password from the synced Secret.
   securityContext:
     runAsUser: {{ .Values.directory.runAsUser }}
     runAsGroup: {{ .Values.directory.runAsGroup }}
-    allowPrivilegeEscalation: false
+    # The directory binary has cap_chown. Dropping every capability and
+    # disabling escalation makes the kernel refuse to exec that file.
+    allowPrivilegeEscalation: true
     capabilities:
       drop:
         - ALL
+      add:
+        - CHOWN
 {{- end }}
 
 {{/*
@@ -224,6 +294,86 @@ Reject values the containers would refuse.
 {{- end }}
 {{- if or (eq (int .Values.submissionAuth.containerPort) (int .Values.postfix.submission.containerPort)) (eq (int .Values.submissionAuth.containerPort) (int .Values.postfix.containerPort)) (eq (int .Values.submissionAuth.containerPort) (int .Values.directory.containerPort)) }}
 {{- fail "submission auth port must differ from smtp, submission, and directory" }}
+{{- end }}
+{{- if or (lt (int .Values.milter.containerPort) 1024) (gt (int .Values.milter.containerPort) 65535) }}
+{{- fail (printf "milter listen port must be between 1024 and 65535, got %v" .Values.milter.containerPort) }}
+{{- end }}
+{{- if ne (int .Values.milter.containerPort) (int .Values.milter.servicePort) }}
+{{- fail "milter containerPort and servicePort must match" }}
+{{- end }}
+{{- if or (eq (int .Values.milter.containerPort) (int .Values.postfix.containerPort)) (eq (int .Values.milter.containerPort) (int .Values.postfix.submission.containerPort)) (eq (int .Values.milter.containerPort) (int .Values.directory.containerPort)) (eq (int .Values.milter.containerPort) (int .Values.submissionAuth.containerPort)) (eq (int .Values.milter.containerPort) (int .Values.postgres.port)) (eq (int .Values.milter.containerPort) (int .Values.dovecot.imap.containerPort)) (eq (int .Values.milter.containerPort) (int .Values.dovecot.lmtp.containerPort)) }}
+{{- fail "milter port must differ from smtp, submission, directory, submission auth, postgres, imap, and lmtp" }}
+{{- end }}
+{{- if and .Values.istio.enabled (or (eq (int .Values.milter.containerPort) (int .Values.istio.lmtpPort)) (eq (int .Values.milter.containerPort) (int .Values.istio.xdsPort))) }}
+{{- fail "milter port must differ from the Istio LMTP and xds ports" }}
+{{- end }}
+{{- $relayMesh := int .Values.relay.mesh.containerPort }}
+{{- $relayVPN := int .Values.relay.vpn.containerPort }}
+{{- if or (lt $relayMesh 1024) (gt $relayMesh 65535) }}
+{{- fail (printf "relay mesh listen port must be between 1024 and 65535, got %v" $relayMesh) }}
+{{- end }}
+{{- if ne $relayMesh (int .Values.relay.mesh.servicePort) }}
+{{- fail "relay mesh containerPort and servicePort must match" }}
+{{- end }}
+{{- if or (lt $relayVPN 1024) (gt $relayVPN 65535) }}
+{{- fail (printf "relay vpn listen port must be between 1024 and 65535, got %v" $relayVPN) }}
+{{- end }}
+{{- if eq $relayMesh $relayVPN }}
+{{- fail "relay vpn port must differ from the relay mesh port" }}
+{{- end }}
+{{- $relayTaken := list (int .Values.postfix.containerPort) (int .Values.postfix.submission.containerPort) (int .Values.directory.containerPort) (int .Values.submissionAuth.containerPort) (int .Values.milter.containerPort) (int .Values.postgres.port) (int .Values.dovecot.imap.containerPort) (int .Values.dovecot.lmtp.containerPort) (int .Values.istio.lmtpPort) (int .Values.istio.xdsPort) }}
+{{- range $relayTaken }}
+{{- if or (eq (int .) $relayMesh) (eq (int .) $relayVPN) }}
+{{- fail (printf "relay listen ports must differ from %v" .) }}
+{{- end }}
+{{- end }}
+{{- if le (int .Values.relay.maxSize) 0 }}
+{{- fail "relay.maxSize must be a positive integer" }}
+{{- end }}
+{{- if .Values.relay.enabled }}
+{{- if not .Values.istio.enabled }}
+{{- fail "relay.enabled requires istio.enabled" }}
+{{- end }}
+{{- $relayV4 := "^((25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\\.){3}(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$" }}
+{{- $relayHost := .Values.relay.outboundHost }}
+{{- if not (or (regexMatch $relayV4 $relayHost) (and (contains ":" $relayHost) (regexMatch "^[0-9A-Fa-f:]+$" $relayHost))) }}
+{{- fail "relay.outboundHost must be an IP address" }}
+{{- end }}
+{{- if or (lt (int .Values.relay.outboundPort) 1) (gt (int .Values.relay.outboundPort) 65535) }}
+{{- fail (printf "relay.outboundPort must be between 1 and 65535, got %v" .Values.relay.outboundPort) }}
+{{- end }}
+{{- if not .Values.relay.allowCIDRs }}
+{{- fail "relay.allowCIDRs is required when the relay is enabled" }}
+{{- end }}
+{{- range $cidr := .Values.relay.allowCIDRs }}
+{{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") }}
+{{- fail (printf "refusing world-open network %s" $cidr) }}
+{{- end }}
+{{- $parts := splitList "/" $cidr }}
+{{- if ne (len $parts) 2 }}
+{{- fail (printf "relay.allowCIDRs entry %s must be a CIDR" $cidr) }}
+{{- end }}
+{{- $addr := index $parts 0 }}
+{{- $prefix := index $parts 1 }}
+{{- if not (regexMatch "^[0-9]+$" $prefix) }}
+{{- fail (printf "relay.allowCIDRs entry %s must be a CIDR" $cidr) }}
+{{- end }}
+{{- $plen := int $prefix }}
+{{- if contains ":" $addr }}
+{{- if or (lt $plen 1) (gt $plen 128) (not (regexMatch "^[0-9A-Fa-f:]+$" $addr)) }}
+{{- fail (printf "relay.allowCIDRs entry %s must be a CIDR" $cidr) }}
+{{- end }}
+{{- else }}
+{{- if or (lt $plen 1) (gt $plen 32) (not (regexMatch $relayV4 $addr)) }}
+{{- fail (printf "relay.allowCIDRs entry %s must be a CIDR" $cidr) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.relay.hostname }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" .Values.relay.hostname) }}
+{{- fail "relay.hostname must be a DNS name" }}
+{{- end }}
+{{- end }}
 {{- end }}
 {{- range $cidr := concat .Values.networkPolicy.agentCIDRs .Values.networkPolicy.nodeCIDRs }}
 {{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") }}
@@ -261,11 +411,30 @@ Reject values the containers would refuse.
 {{- if or (gt (len $istioNamespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $istioNamespace)) }}
 {{- fail "istio.systemNamespace must be a DNS label" }}
 {{- end }}
+{{- $istioRevision := .Values.istio.revision }}
+{{- if or (gt (len $istioRevision) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $istioRevision)) }}
+{{- fail "istio.revision must be a DNS label" }}
+{{- end }}
 {{- if or (lt (int .Values.istio.xdsPort) 1) (gt (int .Values.istio.xdsPort) 65535) }}
 {{- fail (printf "istio.xdsPort must be between 1 and 65535, got %v" .Values.istio.xdsPort) }}
 {{- end }}
 {{- if or (lt (int .Values.istio.lmtpPort) 1024) (gt (int .Values.istio.lmtpPort) 65535) }}
 {{- fail (printf "istio.lmtpPort must be a high port between 1024 and 65535, got %v" .Values.istio.lmtpPort) }}
+{{- end }}
+{{- end }}
+{{- if .Values.dns.enabled }}
+{{- $dnsName := "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" }}
+{{- if not (regexMatch $dnsName .Values.mail.hostname) }}
+{{- fail "mail.hostname must be a DNS name when dns.enabled is true" }}
+{{- end }}
+{{- if not (regexMatch $dnsName .Values.mail.domain) }}
+{{- fail "mail.domain must be a DNS name when dns.enabled is true" }}
+{{- end }}
+{{- if not (regexMatch $dnsName .Values.dns.clusterDomain) }}
+{{- fail "dns.clusterDomain must be a DNS name" }}
+{{- end }}
+{{- if not (regexMatch "^[0-9.]+( [0-9.]+)*$" .Values.dns.upstream) }}
+{{- fail "dns.upstream must be a space-separated list of addresses" }}
 {{- end }}
 {{- end }}
 {{- end }}

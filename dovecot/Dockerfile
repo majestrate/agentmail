@@ -25,7 +25,8 @@ RUN apt-get update \
     && groupadd --system --gid 5000 vmail \
     && useradd --system --uid 5000 --gid 5000 --home-dir /var/mail --shell /usr/sbin/nologin vmail \
     && mkdir -p /var/mail/vhosts /run/dovecot \
-    && chown -R vmail:vmail /var/mail /run/dovecot /etc/dovecot
+    && chown -R vmail:vmail /var/mail /run/dovecot /etc/dovecot \
+    && chmod 2775 /var/mail/vhosts
 
 COPY dovecot/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh

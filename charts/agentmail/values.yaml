@@ -7,13 +7,25 @@ nameOverride: ""
 fullnameOverride: ""
 
 mail:
+  # Virtual mailbox domain. make charts sets this from MAIL_DOMAIN.
+  # This default is used only when the chart is rendered without that variable.
   domain: mail.internal
+  # Postfix myhostname. make charts does not change it.
   hostname: mail.internal
   pgsslmode: prefer
   # vmail owns mailbox files. The directory process creates them on this volume.
   uid: 5000
   gid: 5000
   homeRoot: /var/mail/vhosts
+
+# The chart writes the kube-system CoreDNS Corefile. mail.hostname and
+# mail.domain resolve to the Postfix Service. The single-label Service names
+# Postfix dials resolve to the same Services, because Postfix does not apply
+# the pod DNS search list. upstream is the forwarder list already used here.
+dns:
+  enabled: true
+  clusterDomain: cluster.local
+  upstream: 1.1.1.1 8.8.8.8
 
 # Database role, database name, and password are a Kubernetes Secret written
 # by vaultwarden-kubernetes-secrets. This chart does not create that Secret
@@ -62,9 +74,9 @@ images:
     repository: docker.io/library/postgres
     tag: "17"
     pullPolicy: IfNotPresent
-  # make sets postfix, dovecot, directory, and submission-auth tags to the
-  # Unix time of that invocation. These defaults apply when the chart is
-  # rendered without that override.
+  # make sets postfix, dovecot, directory, submission-auth, milter, and
+  # relay tags to the Unix time of that invocation. These defaults apply
+  # when the chart is rendered without that override.
   postfix:
     repository: agentmail-postfix
     tag: latest
@@ -81,6 +93,14 @@ images:
     repository: agentmail-submission-auth
     tag: latest
     pullPolicy: IfNotPresent
+  milter:
+    repository: agentmail-milter
+    tag: latest
+    pullPolicy: IfNotPresent
+  relay:
+    repository: agentmail-relay
+    tag: latest
+    pullPolicy: IfNotPresent
 
 postgres:
   runAsUser: 999
@@ -95,10 +115,9 @@ postgres:
       memory: 256Mi
 
 postfix:
+  # SMTP listens on 127.0.0.1. With Istio the Service publishes this port
+  # and the sidecar forwards mesh clients to it. Submission requires SASL.
   containerPort: 25
-  servicePort: 25
-  # Submission requires SASL. The sidecar accepts this port and forwards
-  # it to Postfix. Port 25 stays open without authentication.
   submission:
     containerPort: 587
     servicePort: 587
@@ -113,6 +132,40 @@ submissionAuth:
   runAsGroup: 5003
   containerPort: 50052
   servicePort: 50052
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Milter Postfix dials for inbound SMTP. It accepts local users and lists.
+milter:
+  runAsUser: 5004
+  runAsGroup: 5004
+  containerPort: 50053
+  servicePort: 50053
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+# Synchronous SMTP proxy between the mesh and a VPN path to a public MX.
+# Off by default. Enabling it does not point Postfix at the relay.
+# outboundHost is the public MX address on the VPN. allowCIDRs are the
+# only clients accepted on the VPN listener. Both are required when enabled.
+relay:
+  enabled: false
+  runAsUser: 5005
+  runAsGroup: 5005
+  hostname: ""
+  mesh:
+    containerPort: 50054
+    servicePort: 50054
+  vpn:
+    containerPort: 50055
+  outboundHost: ""
+  outboundPort: 25
+  allowCIDRs: []
+  maxSize: 52428800
   resources:
     requests:
       cpu: 50m
@@ -145,13 +198,17 @@ directory:
       cpu: 50m
       memory: 64Mi
 
-# Mutual TLS for directory gRPC, Postfix submission, the SASL daemon, and
-# Postfix to Dovecot LMTP. SMTP on port 25, IMAP, and Postgres stay outside
+# Mutual TLS for directory gRPC, Postfix submission, inbound SMTP, the milter,
+# the SASL daemon, and Postfix to Dovecot LMTP. SMTP stays bound to 127.0.0.1
+# and the sidecar forwards mesh clients to it. IMAP and Postgres stay outside
 # mutual TLS. Install istio-base and istiod, sidecar profile, before applying
 # this chart. The agentmail client is plaintext and runs in the directory pod.
 # Dovecot keeps listening on port 24; lmtpPort is the high port the sidecar accepts.
 istio:
   enabled: true
+  # Matches the istiod install defaultRevision. Pods that join the mesh
+  # carry this label so the revisioned injector selects them.
+  revision: default
   systemNamespace: istio-system
   xdsPort: 15012
   lmtpPort: 10024

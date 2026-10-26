@@ -1,12 +1,22 @@
 Agentmail is installed in namespace {{ .Release.Namespace }}.
 
-SMTP {{ include "agentmail.postfixName" . }}:{{ .Values.postfix.servicePort }} (container {{ .Values.postfix.containerPort }})
 Submission {{ include "agentmail.postfixName" . }}:{{ .Values.postfix.submission.servicePort }} requires SASL via {{ include "agentmail.submissionAuthName" . }}:{{ .Values.submissionAuth.servicePort }}
+{{- if .Values.istio.enabled }}
+Inbound SMTP {{ include "agentmail.postfixName" . }}:{{ .Values.postfix.containerPort }} accepts mesh clients. {{ include "agentmail.milterName" . }}:{{ .Values.milter.servicePort }} filters that mail. Outbound relay stays denied.
+{{- else }}
+SMTP listens on 127.0.0.1:{{ .Values.postfix.containerPort }} inside the Postfix container. {{ include "agentmail.milterName" . }}:{{ .Values.milter.servicePort }} filters it. Outbound relay stays denied.
+{{- end }}
+{{- if .Values.relay.enabled }}
+Transit relay {{ include "agentmail.relayName" . }}:{{ .Values.relay.mesh.servicePort }} accepts mesh SMTP from Postfix and forwards other domains to {{ .Values.relay.outboundHost }}:{{ .Values.relay.outboundPort }}. VPN port {{ .Values.relay.vpn.containerPort }} accepts {{ .Values.mail.domain }} from {{ join ", " .Values.relay.allowCIDRs }}. Postfix still uses the error transport.
+{{- end }}
 IMAP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.imap.servicePort }} (container {{ .Values.dovecot.imap.containerPort }})
 LMTP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.lmtp.servicePort }} (container {{ .Values.dovecot.lmtp.containerPort }})
 directory {{ include "agentmail.directoryName" . }}:{{ .Values.directory.servicePort }}
 
 Mail domain {{ .Values.mail.domain }}. Agents on {{ include "agentmail.internalNetworks" . }} may submit mail.
+{{- if .Values.dns.enabled }}
+{{ .Values.mail.hostname }} resolves to {{ include "agentmail.postfixName" . }}. {{ .Values.mail.domain }} has an MX pointing at that name.
+{{- end }}
 
 Database user, database name, and password come from Secret {{ include "agentmail.secretName" . }}, written by vaultwarden-kubernetes-secrets.
 Before the pods can start:

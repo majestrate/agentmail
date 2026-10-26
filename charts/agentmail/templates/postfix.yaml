@@ -14,6 +14,7 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 8 }}
+        {{- include "agentmail.meshPodLabels" (dict "component" "postfix" "context" .) | nindent 8 }}
       annotations:
         {{- include "agentmail.meshAnnotations" (dict "component" "postfix" "context" .) | nindent 8 }}
     spec:
@@ -32,8 +33,10 @@ spec:
           image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.postfix) }}
           imagePullPolicy: {{ .Values.images.postfix.pullPolicy }}
           ports:
+            {{- if .Values.istio.enabled }}
             - name: smtp
               containerPort: {{ .Values.postfix.containerPort }}
+            {{- end }}
             - name: submission
               containerPort: {{ .Values.postfix.submission.containerPort }}
           envFrom:
@@ -57,18 +60,19 @@ spec:
                 - KILL
           # set-permissions and postfix check run before smtpd binds.
           # Liveness waits until this probe succeeds, so a slow start is not killed.
+          # The probe uses submission so it works with and without the mesh.
           startupProbe:
             tcpSocket:
-              port: smtp
+              port: submission
             periodSeconds: 5
             timeoutSeconds: 1
             failureThreshold: 36
           readinessProbe:
             tcpSocket:
-              port: smtp
+              port: submission
           livenessProbe:
             tcpSocket:
-              port: smtp
+              port: submission
           resources:
             {{- toYaml .Values.postfix.resources | nindent 12 }}
 ---
@@ -83,9 +87,13 @@ spec:
   selector:
     {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
   ports:
-    - name: smtp
-      port: {{ .Values.postfix.servicePort }}
+    # tcp- selects raw TCP in Istio. An unprefixed name is sniffed, and
+    # SMTP and submission deadlock because the server writes the banner first.
+    {{- if .Values.istio.enabled }}
+    - name: tcp-smtp
+      port: {{ .Values.postfix.containerPort }}
       targetPort: smtp
-    - name: submission
+    {{- end }}
+    - name: tcp-submission
       port: {{ .Values.postfix.submission.servicePort }}
       targetPort: submission

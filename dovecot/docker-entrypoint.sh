@@ -128,7 +128,11 @@ protocol lmtp {
 !include_try /usr/share/dovecot/protocols.d/*.protocol
 EOF
 
+    # Group vmail can add domain directories. The directory service runs as
+    # another uid in this group. A private vhosts directory hides those homes.
     mkdir -p /run/dovecot /var/mail/vhosts
+    chown vmail:vmail /var/mail/vhosts
+    chmod 2775 /var/mail/vhosts
     doveconf -n >/dev/null
     printf 'dovecot: imap %s, lmtp %s, db %s\n' "$imap_port" "$lmtp_port" "$host"
 }

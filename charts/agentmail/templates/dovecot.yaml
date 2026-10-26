@@ -30,6 +30,7 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 8 }}
+        {{- include "agentmail.meshPodLabels" (dict "component" "dovecot" "context" .) | nindent 8 }}
       annotations:
         {{- include "agentmail.meshAnnotations" (dict "component" "dovecot" "context" .) | nindent 8 }}
     spec:
@@ -103,10 +104,12 @@ spec:
   selector:
     {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
   ports:
-    - name: imap
+    # tcp- selects raw TCP in Istio. An unprefixed name is sniffed, and LMTP
+    # and IMAP deadlock because the server writes the banner first.
+    - name: tcp-imap
       port: {{ .Values.dovecot.imap.servicePort }}
       targetPort: imap
-    - name: lmtp
+    - name: tcp-lmtp
       port: {{ include "agentmail.lmtpIngressPort" . }}
       {{- if .Values.istio.enabled }}
       targetPort: {{ .Values.istio.lmtpPort }}

@@ -16,6 +16,7 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 8 }}
+        {{- include "agentmail.meshPodLabels" (dict "component" "directory" "context" .) | nindent 8 }}
       annotations:
         {{- include "agentmail.meshAnnotations" (dict "component" "directory" "context" .) | nindent 8 }}
     spec:
@@ -53,7 +54,10 @@ spec:
               value: {{ printf "%s.%s.svc.cluster.local:%v" (include "agentmail.directoryName" .) .Release.Namespace .Values.directory.servicePort | quote }}
             {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
           securityContext:
-            allowPrivilegeEscalation: false
+            # The directory binary has cap_chown in its file capabilities.
+            # false sets NoNewPrivs, and the kernel then ignores that file
+            # capability, so CreateUser cannot chown mailboxes to uid 5000.
+            allowPrivilegeEscalation: true
             capabilities:
               drop:
                 - ALL

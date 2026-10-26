@@ -1,0 +1,91 @@
+{{- if .Values.relay.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.relayName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "relay" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 8 }}
+        {{- include "agentmail.meshPodLabels" (dict "component" "relay" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "relay" "context" .) | nindent 8 }}
+        traffic.sidecar.istio.io/excludeInboundPorts: {{ .Values.relay.vpn.containerPort | quote }}
+        traffic.sidecar.istio.io/excludeOutboundIPRanges: {{ include "agentmail.relayExcludeRanges" . | quote }}
+    spec:
+      automountServiceAccountToken: false
+      {{- if .Values.istio.enabled }}
+      serviceAccountName: {{ include "agentmail.relayName" . }}
+      {{- end }}
+      {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.relay.runAsUser }}
+        runAsGroup: {{ .Values.relay.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.relay) }}
+          imagePullPolicy: {{ .Values.images.relay.pullPolicy }}
+          ports:
+            - name: relay
+              containerPort: {{ .Values.relay.mesh.containerPort }}
+            - name: vpn
+              containerPort: {{ .Values.relay.vpn.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentmail.configMapName" . }}
+          env:
+            - name: RELAY_MESH_LISTEN
+              value: {{ printf ":%v" .Values.relay.mesh.containerPort | quote }}
+            - name: RELAY_VPN_LISTEN
+              value: {{ printf ":%v" .Values.relay.vpn.containerPort | quote }}
+            - name: RELAY_INBOUND_UPSTREAM
+              value: {{ printf "%s:%v" (include "agentmail.clusterFQDN" (dict "name" (include "agentmail.postfixName" .) "context" .)) .Values.postfix.containerPort | quote }}
+            - name: RELAY_OUTBOUND_UPSTREAM
+              value: {{ printf "%s:%v" (include "agentmail.relayDialHost" .) .Values.relay.outboundPort | quote }}
+            - name: RELAY_VPN_ALLOW
+              value: {{ join "," .Values.relay.allowCIDRs | quote }}
+            - name: RELAY_HOSTNAME
+              value: {{ include "agentmail.relayHostname" . | quote }}
+            - name: RELAY_MAX_SIZE
+              value: {{ printf "%d" (int .Values.relay.maxSize) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            tcpSocket:
+              port: relay
+          livenessProbe:
+            tcpSocket:
+              port: relay
+          resources:
+            {{- toYaml .Values.relay.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.relayName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+  ports:
+    # tcp- selects raw TCP in Istio. An unprefixed name is sniffed.
+    - name: tcp-relay
+      port: {{ .Values.relay.mesh.servicePort }}
+      targetPort: relay
+{{- end }}

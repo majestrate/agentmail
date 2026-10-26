@@ -1,10 +1,12 @@
 package directory
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // Maildir creates Dovecot Maildir inboxes under Root.
@@ -33,39 +35,103 @@ func (m Maildir) CreateInbox(address string) error {
 		return err
 	}
 
-	if err := os.MkdirAll(m.Root, 0o755); err != nil {
+	// The mail root is shared with Dovecot, which may have created it mode 0700.
+	// Group vmail has to be able to walk in and add the next domain.
+	if err := ensureShared(m.Root, m.UID, m.GID); err != nil {
 		return err
 	}
-	domainCreated := false
-	if _, err := os.Stat(domainDir); err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-		domainCreated = true
-	}
-	if err := os.MkdirAll(domainDir, 0o2775); err != nil {
+	if err := ensureShared(domainDir, m.UID, m.GID); err != nil {
 		return err
-	}
-	if domainCreated {
-		if err := os.Chmod(domainDir, 0o2775); err != nil {
-			return err
-		}
-		if err := os.Chown(domainDir, m.UID, m.GID); err != nil {
-			return err
-		}
 	}
 
+	// Build the whole Maildir before handing any of it to the mail uid.
+	// Mode 0700 owned by that uid cannot be entered by uid 5002, so sealing
+	// the home first makes the next mkdir fail.
 	dirs := []string{home, maildir, filepath.Join(maildir, "cur"), filepath.Join(maildir, "new"), filepath.Join(maildir, "tmp")}
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := mkdirMailbox(dir, home); err != nil {
 			return err
 		}
-		if err := os.Chmod(dir, 0o700); err != nil {
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if err := os.Chmod(dirs[i], 0o700); err != nil {
 			return err
 		}
-		if err := os.Chown(dir, m.UID, m.GID); err != nil {
+		if err := os.Chown(dirs[i], m.UID, m.GID); err != nil {
+			return fmt.Errorf("chown %s: %w", dirs[i], err)
+		}
+	}
+	return nil
+}
+
+// ensureShared makes path a setgid directory the mail group can extend.
+// It ends owned by uid/gid. A directory this process cannot chmod is taken
+// with CAP_CHOWN, widened, then given to the mail user.
+func ensureShared(path string, uid, gid int) error {
+	return ensureMode(path, uid, gid, os.ModeSetgid|0o775)
+}
+
+// mkdirMailbox creates path. A home left mode 0700 and owned by the mail uid
+// is taken back with CAP_CHOWN so the missing Maildir pieces can be added.
+// Nothing above home is changed.
+func mkdirMailbox(path, home string) error {
+	err := os.MkdirAll(path, 0o700)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES) {
+		return err
+	}
+	dir := path
+	for {
+		if dir != home {
+			if err := withinRoot(home, dir); err != nil {
+				return err
+			}
+		}
+		_, statErr := os.Stat(dir)
+		if statErr != nil && !os.IsNotExist(statErr) && !errors.Is(statErr, syscall.EPERM) && !errors.Is(statErr, syscall.EACCES) {
+			return statErr
+		}
+		if statErr == nil {
+			if chownErr := os.Chown(dir, os.Getuid(), os.Getgid()); chownErr != nil {
+				return fmt.Errorf("chown %s: %w", dir, chownErr)
+			}
+			if chmodErr := os.Chmod(dir, 0o700); chmodErr != nil {
+				return chmodErr
+			}
+			err = os.MkdirAll(path, 0o700)
+			if err == nil {
+				return nil
+			}
+			if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES) {
+				return err
+			}
+		}
+		if dir == home {
 			return err
 		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+func ensureMode(path string, uid, gid int, mode os.FileMode) error {
+	if err := os.MkdirAll(path, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		if !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.EACCES) {
+			return err
+		}
+		if err := os.Chown(path, os.Getuid(), os.Getgid()); err != nil {
+			return err
+		}
+		if err := os.Chmod(path, mode); err != nil {
+			return err
+		}
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", path, err)
 	}
 	return nil
 }

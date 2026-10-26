@@ -35,6 +35,15 @@ metadata:
     {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.milterName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+automountServiceAccountToken: false
+---
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
@@ -126,6 +135,8 @@ spec:
     labels:
       {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 6 }}
   ingress:
+    # SMTP is bound to loopback. Mesh clients hit this port and the sidecar
+    # connects to 127.0.0.1.
     - port:
         number: {{ .Values.postfix.containerPort }}
         protocol: TCP
@@ -149,6 +160,8 @@ spec:
     matchLabels:
       {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 6 }}
   portLevelMtls:
+    "{{ .Values.postfix.containerPort }}":
+      mode: STRICT
     "{{ .Values.postfix.submission.servicePort }}":
       mode: STRICT
 ---
@@ -163,6 +176,10 @@ spec:
   host: {{ include "agentmail.postfixName" . }}.{{ .Release.Namespace }}.svc.cluster.local
   trafficPolicy:
     portLevelSettings:
+      - port:
+          number: {{ .Values.postfix.containerPort }}
+        tls:
+          mode: ISTIO_MUTUAL
       - port:
           number: {{ .Values.postfix.submission.servicePort }}
         tls:
@@ -216,6 +233,54 @@ spec:
         name: sasl
       defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.submissionAuth.containerPort }}
 ---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.milterName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "milter" "context" .) | nindent 6 }}
+  mtls:
+    mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.milterName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+spec:
+  host: {{ include "agentmail.milterName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .Values.milter.servicePort }}
+        tls:
+          mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.milterName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- include "agentmail.selectorLabels" (dict "name" "milter" "context" .) | nindent 6 }}
+  ingress:
+    - port:
+        number: {{ .Values.milter.containerPort }}
+        protocol: TCP
+        name: milter
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.milter.containerPort }}
+---
 apiVersion: networking.istio.io/v1
 kind: Sidecar
 metadata:
@@ -243,4 +308,64 @@ spec:
         protocol: TCP
         name: imaps
       defaultEndpoint: 127.0.0.1:993
+{{- if .Values.relay.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.relayName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.relayName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "relay" "context" .) | nindent 6 }}
+  portLevelMtls:
+    "{{ .Values.relay.mesh.containerPort }}":
+      mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.relayName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+spec:
+  host: {{ include "agentmail.relayName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .Values.relay.mesh.servicePort }}
+        tls:
+          mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.relayName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "relay" "context" .) | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- include "agentmail.selectorLabels" (dict "name" "relay" "context" .) | nindent 6 }}
+  ingress:
+    - port:
+        number: {{ .Values.relay.mesh.containerPort }}
+        protocol: TCP
+        name: relay
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.relay.mesh.containerPort }}
+{{- end }}
 {{- end }}

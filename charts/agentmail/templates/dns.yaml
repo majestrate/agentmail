@@ -1,0 +1,55 @@
+{{- if .Values.dns.enabled }}
+{{- $suffix := printf ".%s.svc.%s" .Release.Namespace .Values.dns.clusterDomain }}
+{{- $postfix := printf "%s%s" (include "agentmail.postfixName" .) $suffix }}
+{{- $domainPattern := .Values.mail.domain | replace "." "\\." }}
+{{- $postfixPattern := $postfix | replace "." "\\." }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels:
+    addonmanager.kubernetes.io/mode: EnsureExists
+    k8s-app: kube-dns
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+          lameduck 5s
+        }
+        ready
+        log . {
+          class error
+        }
+        # rewrite runs before template, so an MX query for the mail name is
+        # already the Postfix Service name. Match both. rewrite restores the
+        # queried name on the answer. fallthrough keeps every other MX lookup.
+        template IN MX {
+            match "^{{ $domainPattern }}\.?$" "^{{ $postfixPattern }}\.?$"
+            answer "{{ "{{" }} .Name {{ "}}" }} 60 IN MX 10 {{ .Values.mail.hostname }}."
+            fallthrough
+        }
+        rewrite name exact {{ .Values.mail.hostname }} {{ $postfix }}
+        {{- if ne .Values.mail.domain .Values.mail.hostname }}
+        rewrite name exact {{ .Values.mail.domain }} {{ $postfix }}
+        {{- end }}
+        {{- $short := list (include "agentmail.postfixName" .) (include "agentmail.dovecotName" .) (include "agentmail.postgresName" .) (include "agentmail.submissionAuthName" .) (include "agentmail.milterName" .) (include "agentmail.directoryName" .) }}
+        {{- if .Values.relay.enabled }}
+        {{- $short = append $short (include "agentmail.relayName" .) }}
+        {{- end }}
+        {{- range $name := $short }}
+        rewrite name exact {{ $name }} {{ $name }}{{ $suffix }}
+        {{- end }}
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+          pods insecure
+          fallthrough in-addr.arpa ip6.arpa
+        }
+        prometheus :9153
+        forward . {{ .Values.dns.upstream }}
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+{{- end }}

@@ -1,0 +1,74 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.milterName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "milter" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 8 }}
+        {{- include "agentmail.meshPodLabels" (dict "component" "milter" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "milter" "context" .) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- if .Values.istio.enabled }}
+      serviceAccountName: {{ include "agentmail.milterName" . }}
+      {{- end }}
+      {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.milter.runAsUser }}
+        runAsGroup: {{ .Values.milter.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        {{- include "agentmail.migrateContainer" . | nindent 8 }}
+      containers:
+        - name: milter
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.milter) }}
+          imagePullPolicy: {{ .Values.images.milter.pullPolicy }}
+          ports:
+            - name: milter
+              containerPort: {{ .Values.milter.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentmail.configMapName" . }}
+          env:
+            {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            tcpSocket:
+              port: milter
+          livenessProbe:
+            tcpSocket:
+              port: milter
+          resources:
+            {{- toYaml .Values.milter.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.milterName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "milter" "context" .) | nindent 4 }}
+  ports:
+    # tcp- selects raw TCP in Istio. An unprefixed name is sniffed.
+    - name: tcp-milter
+      port: {{ .Values.milter.servicePort }}
+      targetPort: milter

@@ -14,6 +14,7 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 8 }}
+        {{- include "agentmail.meshPodLabels" (dict "component" "submission-auth" "context" .) | nindent 8 }}
       annotations:
         {{- include "agentmail.meshAnnotations" (dict "component" "submission-auth" "context" .) | nindent 8 }}
     spec:
@@ -67,6 +68,7 @@ spec:
   selector:
     {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
   ports:
-    - name: sasl
+    # tcp- selects raw TCP in Istio. An unprefixed name is sniffed.
+    - name: tcp-sasl
       port: {{ .Values.submissionAuth.servicePort }}
       targetPort: sasl

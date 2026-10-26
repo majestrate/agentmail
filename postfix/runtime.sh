@@ -154,6 +154,11 @@ configure_postfix() {
     postconf -e "virtual_alias_maps=proxy:pgsql:${ALIAS_MAP}"
     postconf -e "virtual_mailbox_maps=proxy:pgsql:${MAILBOX_MAP}"
     postconf -e "virtual_transport=lmtp:inet:${lmtp_host}:${lmtp_port}"
+    # Cluster DNS answers the A record and returns "host not found" for AAAA.
+    # With inet_protocols=all that AAAA error bounces LMTP (dsn 5.4.4) before
+    # Postfix uses the IPv4 address. lmtp_address_preference does not skip
+    # the AAAA lookup.
+    postconf -e 'inet_protocols=ipv4'
     postconf -e 'maillog_file=/dev/stdout'
     postconf -e 'smtpd_banner=$myhostname ESMTP'
     postconf -F '*/*/chroot=n'
@@ -211,9 +216,9 @@ configure_submission() {
     postconf -P "${submission_port}/inet/smtpd_sasl_security_options=noanonymous"
     postconf -P "${submission_port}/inet/smtpd_tls_security_level=none"
     postconf -P "${submission_port}/inet/smtpd_tls_auth_only=no"
-    postconf -P "${submission_port}/inet/smtpd_client_restrictions=permit_sasl_authenticated, reject"
-    postconf -P "${submission_port}/inet/smtpd_relay_restrictions=permit_sasl_authenticated, reject"
-    postconf -P "${submission_port}/inet/smtpd_recipient_restrictions=permit_sasl_authenticated, reject_unauth_destination"
+    postconf -P "${submission_port}/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject"
+    postconf -P "${submission_port}/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject"
+    postconf -P "${submission_port}/inet/smtpd_recipient_restrictions=permit_sasl_authenticated,reject_unauth_destination"
     postconf -P "${submission_port}/inet/smtpd_sender_restrictions=reject_sender_login_mismatch"
     postconf -P "${submission_port}/inet/smtpd_sender_login_maps=proxy:pgsql:${MAILBOX_MAP}"
     postconf -P "${submission_port}/inet/smtpd_sasl_authenticated_header=yes"
