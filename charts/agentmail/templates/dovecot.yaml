@@ -34,6 +34,9 @@ spec:
         {{- include "agentmail.meshAnnotations" (dict "component" "dovecot" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- if .Values.istio.enabled }}
+      serviceAccountName: {{ include "agentmail.dovecotName" . }}
+      {{- end }}
       {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
       securityContext:
         fsGroup: {{ .Values.dovecot.runAsGroup }}
@@ -104,5 +107,9 @@ spec:
       port: {{ .Values.dovecot.imap.servicePort }}
       targetPort: imap
     - name: lmtp
-      port: {{ .Values.dovecot.lmtp.servicePort }}
+      port: {{ include "agentmail.lmtpIngressPort" . }}
+      {{- if .Values.istio.enabled }}
+      targetPort: {{ .Values.istio.lmtpPort }}
+      {{- else }}
       targetPort: lmtp
+      {{- end }}

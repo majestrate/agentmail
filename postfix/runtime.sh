@@ -1,7 +1,9 @@
 #!/bin/bash
 # Configure Postfix from the environment, then start it. The postfix control
 # command requires root. Database passwords and custom SQL arrive as standard
-# base64. SMTP listens on POSTFIX_SMTP_PORT (default 25).
+# base64. SMTP listens on POSTFIX_SMTP_PORT (default 25). When
+# POSTFIX_SUBMISSION_PORT is set, that port requires SASL and asks the
+# submission auth daemon at SUBMISSION_AUTH_HOST:SUBMISSION_AUTH_PORT.
 
 set -euo pipefail
 
@@ -159,6 +161,7 @@ configure_postfix() {
     # The packaged "smtp" service is port 25. Replace it with POSTFIX_SMTP_PORT.
     postconf -M "${smtp_port}/inet=${smtp_port} inet n - n - - smtpd"
     postconf -MX smtp/inet || true
+    configure_submission "$smtp_port"
 
     local imports
     imports=$(postconf -h import_environment)
@@ -168,8 +171,53 @@ configure_postfix() {
     esac
 
     postfix check
-    printf 'postfix: listen %s, lmtp %s:%s, domains %s, agent networks %s\n' \
-        "$smtp_port" "$lmtp_host" "$lmtp_port" "$joined" "${nets[*]}"
+    if [[ -n "${POSTFIX_SUBMISSION_PORT:-}" ]]; then
+        printf 'postfix: listen %s, submission %s sasl inet:%s:%s, lmtp %s:%s, domains %s, agent networks %s\n' \
+            "$smtp_port" "$POSTFIX_SUBMISSION_PORT" "$SUBMISSION_AUTH_HOST" "$SUBMISSION_AUTH_PORT" \
+            "$lmtp_host" "$lmtp_port" "$joined" "${nets[*]}"
+    else
+        printf 'postfix: listen %s, lmtp %s:%s, domains %s, agent networks %s\n' \
+            "$smtp_port" "$lmtp_host" "$lmtp_port" "$joined" "${nets[*]}"
+    fi
+}
+
+# Submission is a separate smtpd. It rejects mail that has not authenticated.
+# The password check is the SASL daemon, reached with the Dovecot SASL
+# protocol over TCP. The envelope sender must be that user's mailbox address.
+configure_submission() {
+    local smtp_port=$1
+    local submission_port auth_host auth_port
+    submission_port=${POSTFIX_SUBMISSION_PORT:-}
+    [[ -n "$submission_port" ]] || return 0
+    [[ "$submission_port" =~ ^[0-9]+$ && "$submission_port" -ge 1 && "$submission_port" -le 65535 ]] \
+        || die "POSTFIX_SUBMISSION_PORT must be a port number"
+    [[ "$submission_port" != "$smtp_port" ]] || die "POSTFIX_SUBMISSION_PORT must differ from POSTFIX_SMTP_PORT"
+    auth_host=${SUBMISSION_AUTH_HOST:?SUBMISSION_AUTH_HOST is required}
+    auth_port=${SUBMISSION_AUTH_PORT:?SUBMISSION_AUTH_PORT is required}
+    require_line SUBMISSION_AUTH_HOST "$auth_host"
+    require_line SUBMISSION_AUTH_PORT "$auth_port"
+    [[ "$auth_host" =~ ^[A-Za-z0-9._-]+$ ]] || die "SUBMISSION_AUTH_HOST must be a hostname"
+    [[ "$auth_port" =~ ^[0-9]+$ && "$auth_port" -ge 1 && "$auth_port" -le 65535 ]] \
+        || die "SUBMISSION_AUTH_PORT must be a port number"
+    postconf -a | grep -qx dovecot || die "postfix is missing the dovecot sasl plugin"
+    postconf -m | grep -qx pgsql || die "postfix is missing the pgsql map"
+
+    postconf -MX submission/inet || true
+    postconf -M "${submission_port}/inet=${submission_port} inet n - n - - smtpd"
+    postconf -P "${submission_port}/inet/syslog_name=postfix/submission"
+    postconf -P "${submission_port}/inet/smtpd_sasl_auth_enable=yes"
+    postconf -P "${submission_port}/inet/smtpd_sasl_type=dovecot"
+    postconf -P "${submission_port}/inet/smtpd_sasl_path=inet:${auth_host}:${auth_port}"
+    postconf -P "${submission_port}/inet/smtpd_sasl_security_options=noanonymous"
+    postconf -P "${submission_port}/inet/smtpd_tls_security_level=none"
+    postconf -P "${submission_port}/inet/smtpd_tls_auth_only=no"
+    postconf -P "${submission_port}/inet/smtpd_client_restrictions=permit_sasl_authenticated, reject"
+    postconf -P "${submission_port}/inet/smtpd_relay_restrictions=permit_sasl_authenticated, reject"
+    postconf -P "${submission_port}/inet/smtpd_recipient_restrictions=permit_sasl_authenticated, reject_unauth_destination"
+    postconf -P "${submission_port}/inet/smtpd_sender_restrictions=reject_sender_login_mismatch"
+    postconf -P "${submission_port}/inet/smtpd_sender_login_maps=proxy:pgsql:${MAILBOX_MAP}"
+    postconf -P "${submission_port}/inet/smtpd_sasl_authenticated_header=yes"
+    postconf -F "${submission_port}/inet/chroot=n"
 }
 
 if [[ $# -eq 0 ]]; then

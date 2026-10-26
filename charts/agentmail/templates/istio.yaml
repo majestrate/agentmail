@@ -8,6 +8,33 @@ metadata:
     {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
 automountServiceAccountToken: false
 ---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+automountServiceAccountToken: false
+---
 apiVersion: security.istio.io/v1
 kind: PeerAuthentication
 metadata:
@@ -55,4 +82,165 @@ spec:
         protocol: GRPC
         name: grpc
       defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.directory.containerPort }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}-lmtp
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 6 }}
+  portLevelMtls:
+    "{{ .Values.istio.lmtpPort }}":
+      mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}-lmtp
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  host: {{ include "agentmail.dovecotName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .Values.istio.lmtpPort }}
+        tls:
+          mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 6 }}
+  ingress:
+    - port:
+        number: {{ .Values.postfix.containerPort }}
+        protocol: TCP
+        name: smtp
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.postfix.containerPort }}
+    - port:
+        number: {{ .Values.postfix.submission.containerPort }}
+        protocol: TCP
+        name: submission
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.postfix.submission.containerPort }}
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}-submission
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 6 }}
+  portLevelMtls:
+    "{{ .Values.postfix.submission.servicePort }}":
+      mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixName" . }}-submission
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  host: {{ include "agentmail.postfixName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .Values.postfix.submission.servicePort }}
+        tls:
+          mode: ISTIO_MUTUAL
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 6 }}
+  mtls:
+    mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+spec:
+  host: {{ include "agentmail.submissionAuthName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .Values.submissionAuth.servicePort }}
+        tls:
+          mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 6 }}
+  ingress:
+    - port:
+        number: {{ .Values.submissionAuth.containerPort }}
+        protocol: TCP
+        name: sasl
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.submissionAuth.containerPort }}
+---
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 6 }}
+  ingress:
+    - port:
+        number: {{ .Values.istio.lmtpPort }}
+        protocol: TCP
+        name: lmtp
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.dovecot.lmtp.containerPort }}
+    - port:
+        number: {{ .Values.dovecot.imap.containerPort }}
+        protocol: TCP
+        name: imap
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.dovecot.imap.containerPort }}
+    - port:
+        number: 993
+        protocol: TCP
+        name: imaps
+      defaultEndpoint: 127.0.0.1:993
 {{- end }}

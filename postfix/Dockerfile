@@ -2,6 +2,7 @@
 # is deleted before the image is finished. At start, postfix-runtime.sh
 # configures Postfix from the environment as root, which the postfix control
 # command requires, and listens on POSTFIX_SMTP_PORT (default 25).
+# POSTFIX_SUBMISSION_PORT adds a SASL submission listener.
 #
 # Mail is accepted only from loopback and POSTFIX_INTERNAL_NETWORKS. List
 # addresses expand through PostgreSQL virtual_alias_maps. Members are local

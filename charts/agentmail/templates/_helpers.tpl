@@ -96,17 +96,34 @@ imagePullSecrets:
 {{- printf "%s-directory" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "agentmail.submissionAuthName" -}}
+{{- printf "%s-submission-auth" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{/*
-Pod annotations. Only the directory workload joins the mesh, and only its
-gRPC listener is on the proxy. Postgres dials bypass the sidecar.
+Pod annotations. Directory joins the mesh for gRPC. Postfix and Dovecot
+join it for submission and LMTP. The submission auth daemon joins it so
+Postfix can reach SASL. Postgres stays out, and Postgres dials bypass the proxy.
 */}}
 {{- define "agentmail.meshAnnotations" -}}
-{{- if and .context.Values.istio.enabled (eq .component "directory") -}}
+{{- if and .context.Values.istio.enabled (or (eq .component "directory") (eq .component "postfix") (eq .component "dovecot") (eq .component "submission-auth")) -}}
 sidecar.istio.io/inject: "true"
 sidecar.istio.io/nativeSidecar: "true"
 traffic.sidecar.istio.io/excludeOutboundPorts: {{ .context.Values.postgres.port | quote }}
 {{- else -}}
 sidecar.istio.io/inject: "false"
+{{- end -}}
+{{- end }}
+
+{{/*
+Port Postfix dials for LMTP. With Istio this is the high mesh ingress port.
+Dovecot itself keeps listening on dovecot.lmtp.containerPort.
+*/}}
+{{- define "agentmail.lmtpIngressPort" -}}
+{{- if .Values.istio.enabled -}}
+{{- .Values.istio.lmtpPort -}}
+{{- else -}}
+{{- .Values.dovecot.lmtp.servicePort -}}
 {{- end -}}
 {{- end }}
 
@@ -184,7 +201,7 @@ Database role, database name, and base64 password from the synced Secret.
 Reject values the containers would refuse.
 */}}
 {{- define "agentmail.validate" -}}
-{{- $mailPorts := list .Values.postfix.containerPort .Values.dovecot.imap.containerPort .Values.dovecot.lmtp.containerPort }}
+{{- $mailPorts := list .Values.postfix.containerPort .Values.postfix.submission.containerPort .Values.dovecot.imap.containerPort .Values.dovecot.lmtp.containerPort }}
 {{- range $mailPorts }}
 {{- if or (lt (int .) 1) (gt (int .) 65535) }}
 {{- fail (printf "mail listen ports must be between 1 and 65535, got %v" .) }}
@@ -192,6 +209,21 @@ Reject values the containers would refuse.
 {{- end }}
 {{- if or (lt (int .Values.directory.containerPort) 1024) (gt (int .Values.directory.containerPort) 65535) }}
 {{- fail (printf "directory listen port must be between 1024 and 65535, got %v" .Values.directory.containerPort) }}
+{{- end }}
+{{- if ne (int .Values.postfix.submission.containerPort) (int .Values.postfix.submission.servicePort) }}
+{{- fail "postfix submission containerPort and servicePort must match" }}
+{{- end }}
+{{- if eq (int .Values.postfix.containerPort) (int .Values.postfix.submission.containerPort) }}
+{{- fail "postfix submission port must differ from the smtp port" }}
+{{- end }}
+{{- if or (lt (int .Values.submissionAuth.containerPort) 1024) (gt (int .Values.submissionAuth.containerPort) 65535) }}
+{{- fail (printf "submission auth listen port must be between 1024 and 65535, got %v" .Values.submissionAuth.containerPort) }}
+{{- end }}
+{{- if ne (int .Values.submissionAuth.containerPort) (int .Values.submissionAuth.servicePort) }}
+{{- fail "submission auth containerPort and servicePort must match" }}
+{{- end }}
+{{- if or (eq (int .Values.submissionAuth.containerPort) (int .Values.postfix.submission.containerPort)) (eq (int .Values.submissionAuth.containerPort) (int .Values.postfix.containerPort)) (eq (int .Values.submissionAuth.containerPort) (int .Values.directory.containerPort)) }}
+{{- fail "submission auth port must differ from smtp, submission, and directory" }}
 {{- end }}
 {{- range $cidr := concat .Values.networkPolicy.agentCIDRs .Values.networkPolicy.nodeCIDRs }}
 {{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") }}
@@ -231,6 +263,9 @@ Reject values the containers would refuse.
 {{- end }}
 {{- if or (lt (int .Values.istio.xdsPort) 1) (gt (int .Values.istio.xdsPort) 65535) }}
 {{- fail (printf "istio.xdsPort must be between 1 and 65535, got %v" .Values.istio.xdsPort) }}
+{{- end }}
+{{- if or (lt (int .Values.istio.lmtpPort) 1024) (gt (int .Values.istio.lmtpPort) 65535) }}
+{{- fail (printf "istio.lmtpPort must be a high port between 1024 and 65535, got %v" .Values.istio.lmtpPort) }}
 {{- end }}
 {{- end }}
 {{- end }}

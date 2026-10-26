@@ -1,0 +1,72 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "submission-auth" "context" .) | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      {{- if .Values.istio.enabled }}
+      serviceAccountName: {{ include "agentmail.submissionAuthName" . }}
+      {{- end }}
+      {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: {{ .Values.submissionAuth.runAsUser }}
+        runAsGroup: {{ .Values.submissionAuth.runAsGroup }}
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        {{- include "agentmail.migrateContainer" . | nindent 8 }}
+      containers:
+        - name: submission-auth
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.submissionAuth) }}
+          imagePullPolicy: {{ .Values.images.submissionAuth.pullPolicy }}
+          ports:
+            - name: sasl
+              containerPort: {{ .Values.submissionAuth.containerPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "agentmail.configMapName" . }}
+          env:
+            {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          readinessProbe:
+            tcpSocket:
+              port: sasl
+          livenessProbe:
+            tcpSocket:
+              port: sasl
+          resources:
+            {{- toYaml .Values.submissionAuth.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+spec:
+  selector:
+    {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+  ports:
+    - name: sasl
+      port: {{ .Values.submissionAuth.servicePort }}
+      targetPort: sasl

@@ -1,6 +1,7 @@
 Agentmail is installed in namespace {{ .Release.Namespace }}.
 
 SMTP {{ include "agentmail.postfixName" . }}:{{ .Values.postfix.servicePort }} (container {{ .Values.postfix.containerPort }})
+Submission {{ include "agentmail.postfixName" . }}:{{ .Values.postfix.submission.servicePort }} requires SASL via {{ include "agentmail.submissionAuthName" . }}:{{ .Values.submissionAuth.servicePort }}
 IMAP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.imap.servicePort }} (container {{ .Values.dovecot.imap.containerPort }})
 LMTP {{ include "agentmail.dovecotName" . }}:{{ .Values.dovecot.lmtp.servicePort }} (container {{ .Values.dovecot.lmtp.containerPort }})
 directory {{ include "agentmail.directoryName" . }}:{{ .Values.directory.servicePort }}

@@ -18,6 +18,9 @@ spec:
         {{- include "agentmail.meshAnnotations" (dict "component" "postfix" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- if .Values.istio.enabled }}
+      serviceAccountName: {{ include "agentmail.postfixName" . }}
+      {{- end }}
       {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
       securityContext:
         seccompProfile:
@@ -31,6 +34,8 @@ spec:
           ports:
             - name: smtp
               containerPort: {{ .Values.postfix.containerPort }}
+            - name: submission
+              containerPort: {{ .Values.postfix.submission.containerPort }}
           envFrom:
             - configMapRef:
                 name: {{ include "agentmail.configMapName" . }}
@@ -81,3 +86,6 @@ spec:
     - name: smtp
       port: {{ .Values.postfix.servicePort }}
       targetPort: smtp
+    - name: submission
+      port: {{ .Values.postfix.submission.servicePort }}
+      targetPort: submission

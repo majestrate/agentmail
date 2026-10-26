@@ -62,9 +62,9 @@ images:
     repository: docker.io/library/postgres
     tag: "17"
     pullPolicy: IfNotPresent
-  # make sets postfix, dovecot, and directory tags to the Unix time
-  # of that invocation. These defaults apply when the chart is rendered
-  # without that override.
+  # make sets postfix, dovecot, directory, and submission-auth tags to the
+  # Unix time of that invocation. These defaults apply when the chart is
+  # rendered without that override.
   postfix:
     repository: agentmail-postfix
     tag: latest
@@ -75,6 +75,10 @@ images:
     pullPolicy: IfNotPresent
   directory:
     repository: agentmail-directory
+    tag: latest
+    pullPolicy: IfNotPresent
+  submissionAuth:
+    repository: agentmail-submission-auth
     tag: latest
     pullPolicy: IfNotPresent
 
@@ -93,10 +97,26 @@ postgres:
 postfix:
   containerPort: 25
   servicePort: 25
+  # Submission requires SASL. The sidecar accepts this port and forwards
+  # it to Postfix. Port 25 stays open without authentication.
+  submission:
+    containerPort: 587
+    servicePort: 587
   resources:
     requests:
       cpu: 50m
       memory: 128Mi
+
+# SASL daemon Postfix dials for submission. It checks users.password_hash.
+submissionAuth:
+  runAsUser: 5003
+  runAsGroup: 5003
+  containerPort: 50052
+  servicePort: 50052
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
 
 dovecot:
   # fsGroup for the mail volume. The master process runs as root.
@@ -125,11 +145,13 @@ directory:
       cpu: 50m
       memory: 64Mi
 
-# Mutual TLS for the directory gRPC port. SMTP, IMAP, LMTP, and Postgres
-# are not in the mesh. Install istio-base and istiod, sidecar profile,
-# before applying this chart. The agentmail client is plaintext and runs
-# in the directory pod; that pod's sidecar authenticates the call.
+# Mutual TLS for directory gRPC, Postfix submission, the SASL daemon, and
+# Postfix to Dovecot LMTP. SMTP on port 25, IMAP, and Postgres stay outside
+# mutual TLS. Install istio-base and istiod, sidecar profile, before applying
+# this chart. The agentmail client is plaintext and runs in the directory pod.
+# Dovecot keeps listening on port 24; lmtpPort is the high port the sidecar accepts.
 istio:
   enabled: true
   systemNamespace: istio-system
   xdsPort: 15012
+  lmtpPort: 10024

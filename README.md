@@ -20,7 +20,7 @@ Mail is not relayed to the public internet. `default_transport` and `relay_trans
 
 ## Mail flow
 
-1. An agent submits SMTP to the Postfix Service.
+1. An agent on the internal network delivers SMTP to the Postfix Service on port 25. A mesh client uses submission on port 587 and authenticates as a mailbox user.
 2. `virtual_alias_maps` expands a distribution-list address to member addresses.
 3. `virtual_mailbox_maps` accepts users in `mail.domain`.
 4. Postfix delivers with LMTP to the Dovecot Service.
@@ -33,22 +33,24 @@ Postfix and Dovecot run as root. Postfix rejects its control command for any oth
 
 | Process | UID | Container port | Service port |
 | --- | --- | --- | --- |
-| Dovecot master | 0 | 143, 993, 24 | 143, 24 |
+| Dovecot master | 0 | 143, 993, 24 | 143, 10024 |
 | Postfix SMTP | 0 | 25 | 25 |
+| Postfix submission | 0 | 587 | 587 |
+| Submission SASL | 5003 | 50052 | 50052 |
 | Directory gRPC | 5002 | 50051 | 50051 |
 | Postgres | 999 | 5432 | 5432 |
 
-Postfix delivers to Dovecot LMTP on port 24. The directory service mounts the same mail volume as Dovecot. Creating a user makes `/var/mail/vhosts/<domain>/<local>/Maildir` with `cur`, `new`, and `tmp`, owned by uid 5000. Mail and Postgres each have a 10Gi ReadWriteOnce volume, so those Deployments stay at one replica and use the Recreate strategy.
+Postfix delivers to Dovecot LMTP through the Service on port 10024. Dovecot still listens on port 24, and the sidecar forwards the mesh connection there. Submission on port 587 requires SMTP AUTH. Postfix asks the submission auth daemon over SASL, and that daemon checks `users.password_hash`. The envelope sender has to be that user's address. Port 25 does not require a password. The directory service mounts the same mail volume as Dovecot. Creating a user makes `/var/mail/vhosts/<domain>/<local>/Maildir` with `cur`, `new`, and `tmp`, owned by uid 5000. Mail and Postgres each have a 10Gi ReadWriteOnce volume, so those Deployments stay at one replica and use the Recreate strategy.
 
 ## Build
 
-From the repository root, `make` builds all three images. The Dockerfiles copy files by paths from that root, so the build context stays there. The image tag defaults to the Unix time of that `make` invocation. `make TAG=dev` sets another tag. `make charts` and `make apply` put that same tag on `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`. `make DOCKER=podman` selects the container tool.
+From the repository root, `make` builds all four images. The Dockerfiles copy files by paths from that root, so the build context stays there. The image tag defaults to the Unix time of that `make` invocation. `make TAG=dev` sets another tag. `make charts` and `make apply` put that same tag on `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`. `make DOCKER=podman` selects the container tool.
 
 ```shell
 make
 ```
 
-That produces `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`, the directory gRPC server at `bin/directory`, and the management client at `bin/agentmail`. `make server` generates the protobuf code and builds those two binaries. Each image is also its own target: `make postfix`, `make dovecot`, or `make directory`. The directory image target generates the protobuf code first. The directory image includes `/usr/local/bin/agentmail`.
+That produces `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`, the directory gRPC server at `bin/directory`, and the management client at `bin/agentmail`. `make server` generates the protobuf code and builds those two binaries. Each image is also its own target: `make postfix`, `make dovecot`, `make directory`, or `make submission-auth`. The directory image target generates the protobuf code first. The directory image includes `/usr/local/bin/agentmail`.
 
 `make charts` compiles `charts/agentmail` to `dist/agentmail.yaml` and the Vaultwarden Kubernetes secrets chart 2.1.0 to `dist/vaultwarden-kubernetes-secrets.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. `VAULTWARDEN_SERVER_URL` is required and must be an `https` URL. The chart does not store it.
 
@@ -87,9 +89,9 @@ make helm-install \
 make teardown
 ```
 
-`DOCKER_REGISTRY` is the registry host or host/path for the images this repository builds. The chart does not store it. An empty value leaves every repository as written. `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory` are prefixed with it. `docker.io/library/postgres:17` stays on Docker Hub.
+`DOCKER_REGISTRY` is the registry host or host/path for the images this repository builds. The chart does not store it. An empty value leaves every repository as written. `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth` are prefixed with it. `docker.io/library/postgres:17` stays on Docker Hub.
 
-`make push` builds `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`, tags each as `$DOCKER_REGISTRY/<name>:$TAG`, and pushes those tags. `DOCKER_REGISTRY` is required. It is a registry host or host/path, with no URL scheme. One trailing slash is removed.
+`make push` builds `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`, tags each as `$DOCKER_REGISTRY/<name>:$TAG`, and pushes those tags. `DOCKER_REGISTRY` is required. It is a registry host or host/path, with no URL scheme. One trailing slash is removed.
 
 ```shell
 make push DOCKER_REGISTRY="$DOCKER_REGISTRY"
@@ -155,7 +157,7 @@ helm install agentmail charts/agentmail -n agentmail --create-namespace \
   --set images.registry="$DOCKER_REGISTRY"
 ```
 
-`DOCKER_REGISTRY` is a registry host or host/path, with no URL scheme and no trailing slash. It is prefixed onto `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`. The migration init container uses the same directory image. `docker.io/library/postgres:17` is left unchanged. Pods that pull those three images reference image pull Secret `agentmail-registry` (override with `vaultwarden.registrySecretName`). That Secret is the docker config the sync service writes. The chart does not store the registry username or password.
+`DOCKER_REGISTRY` is a registry host or host/path, with no URL scheme and no trailing slash. It is prefixed onto `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, and `agentmail-submission-auth`. The migration init container uses the same directory image. `docker.io/library/postgres:17` is left unchanged. Pods that pull those four images reference image pull Secret `agentmail-registry` (override with `vaultwarden.registrySecretName`). That Secret is the docker config the sync service writes. The chart does not store the registry username or password.
 
 `charts/agentmail/values.yaml` holds the mail domain, hostname, image names, ports, volume sizes, and the Vaultwarden Secret key names. `mail.domain` defaults to `example.com`. A release whose name contains `agentmail` keeps that name, so the default Secret is `agentmail-mail-db`. Set `vaultwarden.secretName` when the item uses another `secret-name`.
 
@@ -163,11 +165,11 @@ After install, agents on the agent CIDR use SMTP on Service `agentmail-postfix` 
 
 ## Istio
 
-Istio authenticates the directory gRPC port. Postfix, Dovecot, Postgres, SMTP, IMAP, and LMTP have `sidecar.istio.io/inject: "false"`. The directory pod is the injected workload. Its sidecar listens for gRPC, and Postgres dials from that pod bypass the proxy. `istio.enabled` defaults to true.
+Istio authenticates the directory gRPC port, Postfix submission, the SASL hop from Postfix to the submission auth daemon, and the LMTP hop from Postfix to Dovecot. Directory, Postfix, Dovecot, and the submission auth daemon are injected. Postgres, SMTP on port 25, and IMAP stay outside mutual TLS. Postgres dials from those pods bypass the proxy. `istio.enabled` defaults to true. The LMTP mesh port is `istio.lmtpPort` (10024). Dovecot keeps listening on 24, and the Dovecot sidecar accepts 10024 and forwards it to `127.0.0.1:24`. That ingress requires STRICT mutual TLS. Submission on 587 also requires STRICT mutual TLS, and the SASL daemon accepts it only from Postfix. IMAP on 143 and IMAPS on 993 stay plaintext through the Dovecot sidecar. Port 25 stays plaintext.
 
 Install the sidecar profile before applying this chart. Ambient mode is a different data plane and is not the one this chart uses. `make helm-install` installs Istio 1.31.3 from `https://blob.istio.io/istio-release/charts`: `istio-base` with `defaultRevision=default`, then `istiod`, both in namespace `istio-system`.
 
-The chart then installs a directory ServiceAccount, a `PeerAuthentication` in `STRICT` mode selected to the directory workload, a `DestinationRule` with `ISTIO_MUTUAL` on the directory Service port, and a `Sidecar` whose ingress is the gRPC port. The directory NetworkPolicy allows the pod to reach `istiod` on port 15012 and to reach its own gRPC port. Set `istio.enabled` to false to render the chart without those resources.
+The chart installs ServiceAccounts for directory, Postfix, Dovecot, and submission auth. Directory gRPC is `STRICT` with `ISTIO_MUTUAL`. Submission uses a Postfix `PeerAuthentication` that is `STRICT` only on port 587, and a `DestinationRule` of `ISTIO_MUTUAL` on that Service port. The submission auth daemon is `STRICT` on port 50052. LMTP uses a Dovecot `PeerAuthentication` that is `STRICT` only on port 10024, a `DestinationRule` of `ISTIO_MUTUAL` on that Service port, and a Dovecot `Sidecar` whose LMTP ingress is 10024. NetworkPolicy allows Postfix to reach the SASL daemon on 50052 and Dovecot on 10024, and those pods to reach `istiod` on port 15012. Set `istio.enabled` to false to render the chart without those resources. With Istio disabled, the LMTP Service port stays 24 and submission stays on 587 without mutual TLS. SASL is still required.
 
 Apply the mail chart after `istiod` is ready. The directory pod has to be created again once the injector webhook exists, or the gRPC port stays plaintext.
 

@@ -23,6 +23,9 @@ spec:
         - podSelector:
             matchLabels:
               {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 14 }}
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 14 }}
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
@@ -50,6 +53,18 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postfix.containerPort }}
+    - from:
+        {{- if .Values.istio.enabled }}
+        - podSelector: {}
+        {{- else }}
+        {{- range .Values.networkPolicy.agentCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postfix.submission.containerPort }}
   egress:
     - to:
         - podSelector:
@@ -64,7 +79,68 @@ spec:
               {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 14 }}
       ports:
         - protocol: TCP
-          port: {{ .Values.dovecot.lmtp.containerPort }}
+          port: {{ include "agentmail.lmtpIngressPort" . }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.submissionAuth.containerPort }}
+    {{- if .Values.istio.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.istio.xdsPort }}
+    {{- end }}
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.submissionAuthName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "submission-auth" "context" .) | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "submission-auth" "context" .) | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.submissionAuth.containerPort }}
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "postgres" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgres.port }}
+    {{- if .Values.istio.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.istio.xdsPort }}
+    {{- end }}
     - ports:
         - protocol: UDP
           port: 53
@@ -100,7 +176,7 @@ spec:
               {{- include "agentmail.selectorLabels" (dict "name" "postfix" "context" .) | nindent 14 }}
       ports:
         - protocol: TCP
-          port: {{ .Values.dovecot.lmtp.containerPort }}
+          port: {{ include "agentmail.lmtpIngressPort" . }}
   egress:
     - to:
         - podSelector:
@@ -109,6 +185,15 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
+    {{- if .Values.istio.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.istio.xdsPort }}
+    {{- end }}
     - ports:
         - protocol: UDP
           port: 53

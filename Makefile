@@ -13,7 +13,7 @@
 #   make TAG=dev
 #   make DOCKER=podman
 #
-# TAG defaults to the Unix time of this make invocation. The three built
+# TAG defaults to the Unix time of this make invocation. The four built
 # images and the chart tags for those images share that value. Postgres
 # stays at the tag in values.yaml.
 #
@@ -47,7 +47,7 @@
 # that namespace, then uninstalls istiod and istio-base and deletes the
 # Istio namespace. Missing releases and namespaces are ignored. It refuses
 # default, kube-system, kube-public, and kube-node-lease.
-# make push tags the three built images with DOCKER_REGISTRY and pushes them.
+# make push tags the four built images with DOCKER_REGISTRY and pushes them.
 #   DOCKER_REGISTRY=$DOCKER_REGISTRY make push
 
 DOCKER ?= docker
@@ -82,10 +82,10 @@ HELM_VERSION := v3.19.0
 ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 export PATH := $(shell $(GO) env GOPATH)/bin:$(PATH)
 
-.PHONY: all postfix dovecot directory server generate clean ensure-tools charts apply teardown push push-check \
+.PHONY: all postfix dovecot directory submission-auth server generate clean ensure-tools charts apply teardown push push-check \
 	helm-ensure helm-add helm-update helm-install helm-install-istio helm-install-vaultwarden vaultwarden-secret
 
-all: postfix dovecot directory server
+all: postfix dovecot directory submission-auth server
 
 postfix:
 	$(DOCKER) build -f $(ROOT)/postfix/Dockerfile -t agentmail-postfix:$(TAG) $(ROOT)
@@ -95,6 +95,9 @@ dovecot:
 
 directory: generate
 	$(DOCKER) build -f $(ROOT)/directory/Dockerfile -t agentmail-directory:$(TAG) $(ROOT)
+
+submission-auth:
+	$(DOCKER) build -f $(ROOT)/submission-auth/Dockerfile -t agentmail-submission-auth:$(TAG) $(ROOT)
 
 server: $(ROOT)/bin/directory $(ROOT)/bin/agentmail
 
@@ -115,13 +118,15 @@ charts: helm-ensure
 		--set-string images.registry='$(DOCKER_REGISTRY)' \
 		--set-string images.postfix.tag='$(TAG)' \
 		--set-string images.dovecot.tag='$(TAG)' \
-		--set-string images.directory.tag='$(TAG)'
+		--set-string images.directory.tag='$(TAG)' \
+		--set-string images.submissionAuth.tag='$(TAG)'
 	$(HELM) template $(RELEASE) $(ROOT)/charts/agentmail \
 		--namespace $(NAMESPACE) \
 		--set-string images.registry='$(DOCKER_REGISTRY)' \
 		--set-string images.postfix.tag='$(TAG)' \
 		--set-string images.dovecot.tag='$(TAG)' \
 		--set-string images.directory.tag='$(TAG)' \
+		--set-string images.submissionAuth.tag='$(TAG)' \
 		> $(ROOT)/dist/agentmail.yaml.tmp
 	mv $(ROOT)/dist/agentmail.yaml.tmp $(ROOT)/dist/agentmail.yaml
 	@set -eu; \
@@ -309,9 +314,9 @@ vaultwarden-secret:
 	fi
 
 # push-check is first so a missing registry fails before the image builds.
-push: push-check postfix dovecot directory
+push: push-check postfix dovecot directory submission-auth
 	@set -eu; \
-	for name in agentmail-postfix agentmail-dovecot agentmail-directory; do \
+	for name in agentmail-postfix agentmail-dovecot agentmail-directory agentmail-submission-auth; do \
 		$(DOCKER) tag "$$name:$(TAG)" "$(DOCKER_REGISTRY_TRIMMED)/$$name:$(TAG)"; \
 		$(DOCKER) push "$(DOCKER_REGISTRY_TRIMMED)/$$name:$(TAG)"; \
 	done
@@ -343,7 +348,7 @@ clean:
 	rm -f $(ROOT)/dist/agentmail.yaml $(ROOT)/dist/agentmail.yaml.tmp \
 		$(ROOT)/dist/vaultwarden-kubernetes-secrets.yaml $(ROOT)/dist/vaultwarden-kubernetes-secrets.yaml.tmp
 	@set -eu; \
-	for image in agentmail-postfix agentmail-dovecot agentmail-directory; do \
+	for image in agentmail-postfix agentmail-dovecot agentmail-directory agentmail-submission-auth; do \
 		ids=$$($(DOCKER) ps -aq --filter "ancestor=$$image" || true); \
 		if [ -n "$$ids" ]; then $(DOCKER) rm -f $$ids; fi; \
 		imgids=$$($(DOCKER) images -q "$$image" || true); \

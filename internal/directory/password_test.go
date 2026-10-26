@@ -22,4 +22,15 @@ func TestHashPassword(t *testing.T) {
 	if _, err := HashPassword(""); err == nil {
 		t.Fatal("accepted empty password")
 	}
+	ok, err := VerifyPassword(hash, "correct horse")
+	if err != nil || !ok {
+		t.Fatalf("verify: ok=%v err=%v", ok, err)
+	}
+	ok, err = VerifyPassword(hash, "wrong")
+	if err != nil || ok {
+		t.Fatalf("mismatch: ok=%v err=%v", ok, err)
+	}
+	if _, err := VerifyPassword("plain", "correct horse"); err == nil {
+		t.Fatal("accepted a hash without the BLF-CRYPT scheme")
+	}
 }

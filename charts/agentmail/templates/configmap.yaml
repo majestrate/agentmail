@@ -13,8 +13,12 @@ data:
   POSTFIX_PGSQL_PORT: {{ .Values.postgres.port | quote }}
   PGSSLMODE: {{ .Values.mail.pgsslmode | quote }}
   DOVECOT_LMTP_HOST: {{ include "agentmail.dovecotName" . | quote }}
-  DOVECOT_LMTP_PORT: {{ .Values.dovecot.lmtp.servicePort | quote }}
+  DOVECOT_LMTP_PORT: {{ include "agentmail.lmtpIngressPort" . | quote }}
   POSTFIX_SMTP_PORT: {{ .Values.postfix.containerPort | quote }}
+  POSTFIX_SUBMISSION_PORT: {{ .Values.postfix.submission.containerPort | quote }}
+  SUBMISSION_AUTH_HOST: {{ include "agentmail.submissionAuthName" . | quote }}
+  SUBMISSION_AUTH_PORT: {{ .Values.submissionAuth.servicePort | quote }}
+  SUBMISSION_AUTH_LISTEN: {{ printf ":%v" .Values.submissionAuth.containerPort | quote }}
   DOVECOT_IMAP_PORT: {{ .Values.dovecot.imap.containerPort | quote }}
   DOVECOT_LMTP_LISTEN_PORT: {{ .Values.dovecot.lmtp.containerPort | quote }}
   DIRECTORY_LISTEN: {{ printf ":%v" .Values.directory.containerPort | quote }}
