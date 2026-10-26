@@ -15,10 +15,11 @@ import (
 type Server struct {
 	directoryv1.UnimplementedDirectoryServer
 	store *Store
+	mail  Maildir
 }
 
-func NewServer(store *Store) *Server {
-	return &Server{store: store}
+func NewServer(store *Store, mail Maildir) *Server {
+	return &Server{store: store, mail: mail}
 }
 
 func (s *Server) CreateUser(ctx context.Context, req *directoryv1.CreateUserRequest) (*directoryv1.User, error) {
@@ -33,6 +34,13 @@ func (s *Server) CreateUser(ctx context.Context, req *directoryv1.CreateUserRequ
 	user, err := s.store.CreateUser(ctx, address, displayName, hash)
 	if err != nil {
 		return nil, rpcErr(err)
+	}
+	if err := s.mail.CreateInbox(user.Address); err != nil {
+		if delErr := s.store.DeleteUser(ctx, user.ID); delErr != nil {
+			log.Printf("directory: remove user %d after mailbox failure: %v", user.ID, delErr)
+		}
+		log.Printf("directory: mailbox: %v", err)
+		return nil, status.Error(codes.Internal, "internal error")
 	}
 	return userProto(user), nil
 }

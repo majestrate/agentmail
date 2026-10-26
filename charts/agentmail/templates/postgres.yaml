@@ -41,7 +41,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: postgres
-          image: {{ include "agentmail.image" .Values.images.postgres }}
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.postgres) }}
           imagePullPolicy: {{ .Values.images.postgres.pullPolicy }}
           args:
             - -c
@@ -54,21 +54,32 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agentmail.secretName" . }}
-                  key: POSTGRES_USER
+                  key: {{ .Values.vaultwarden.keys.postgresUser }}
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agentmail.secretName" . }}
-                  key: POSTGRES_DB
+                  key: {{ .Values.vaultwarden.keys.postgresDatabase }}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agentmail.secretName" . }}
-                  key: POSTGRES_PASSWORD
+                  key: {{ .Values.vaultwarden.keys.postgresPassword }}
             - name: PGDATA
               value: {{ .Values.postgresql.pgdata | quote }}
           securityContext:
             {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+          # TCP so the image's socket-only init server cannot satisfy the probe
+          # before it has written pg_hba.conf and created POSTGRES_DB.
+          startupProbe:
+            exec:
+              command:
+                - /bin/sh
+                - -c
+                - pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 30
           readinessProbe:
             exec:
               command:

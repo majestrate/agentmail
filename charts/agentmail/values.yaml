@@ -7,41 +7,39 @@ nameOverride: ""
 fullnameOverride: ""
 
 mail:
-  domain: example.com
-  hostname: mail.example.com
+  domain: mail.internal
+  hostname: mail.internal
   pgsslmode: prefer
+  # vmail owns mailbox files. The directory process creates them on this volume.
+  uid: 5000
+  gid: 5000
+  homeRoot: /var/mail/vhosts
 
-# Database role, database name, and password live in Bitwarden Secrets Manager.
-# Pass the server base when rendering the chart. The chart calls
-# {serverURL}/api and {serverURL}/identity.
-#   --set bitwarden.serverURL=$BITWARDEN_SERVER_URL
-# The machine-account access token is a Kubernetes Secret you create in the
-# release namespace. This chart only stores its name.
+# Database role, database name, and password are a Kubernetes Secret written
+# by vaultwarden-kubernetes-secrets. This chart does not create that Secret
+# and does not store a Vaultwarden server URL.
 #
-# Create three secrets in the Bitwarden project. The password secret's value
-# is the standard base64 of the password, one line, with no newline:
+# On the Vaultwarden item, set namespaces to the release namespace and
+# secret-name to the Secret name below (empty means {fullname}-mail-db).
+# Put each key in this list on the item as a custom field. The password
+# field POSTFIX_PGSQL_PASSWORD_B64 is standard base64, one line, no newline:
 #   printf '%s' 'the-password' | base64 -w0
-bitwarden:
-  serverURL: ""
-  organizationID: ""
-  projectID: ""
-  sdkURL: https://bitwarden-sdk-server.external-secrets.svc.cluster.local:9998
-  refreshInterval: 1h
-  authSecret:
-    name: bitwarden-access-token
-    key: token
-  # TLS trust for the Bitwarden SDK server. The Secret or ConfigMap must
-  # already exist in the release namespace. SecretStore cannot read another
-  # namespace.
-  ca:
-    type: Secret
-    name: bitwarden-sdk-server-ca
-    key: ca.crt
-  # Bitwarden secret names in this project. A name must match exactly one secret.
-  secrets:
-    user: agentmail-pgsql-user
-    database: agentmail-pgsql-database
-    passwordB64: agentmail-pgsql-password-b64
+# POSTGRES_PASSWORD is that same password in plaintext. The official Postgres
+# image reads it directly.
+vaultwarden:
+  secretName: ""
+  # Pull Secret written by vaultwarden-kubernetes-secrets when images.registry
+  # is set. Empty means {fullname}-registry. The Vaultwarden item uses
+  # secret-type kubernetes.io/dockerconfigjson. This chart does not store
+  # the registry username or password.
+  registrySecretName: ""
+  keys:
+    user: POSTFIX_PGSQL_USER
+    database: POSTFIX_PGSQL_DBNAME
+    passwordB64: POSTFIX_PGSQL_PASSWORD_B64
+    postgresUser: POSTGRES_USER
+    postgresDatabase: POSTGRES_DB
+    postgresPassword: POSTGRES_PASSWORD
 
 postgresql:
   pgdata: /var/lib/postgresql/data/pgdata
@@ -54,10 +52,19 @@ networkPolicy:
     - 192.168.0.0/16
 
 images:
+  # Registry host or host/path for images we build. No URL scheme and no
+  # trailing slash. Pass DOCKER_REGISTRY when rendering the chart. Empty
+  # keeps each repository as written. A repository that already names a
+  # registry host, such as docker.io/library/postgres, stays unchanged.
+  #   --set images.registry=$DOCKER_REGISTRY
+  registry: ""
   postgres:
     repository: docker.io/library/postgres
     tag: "17"
     pullPolicy: IfNotPresent
+  # make sets postfix, dovecot, and directory tags to the Unix time
+  # of that invocation. These defaults apply when the chart is rendered
+  # without that override.
   postfix:
     repository: agentmail-postfix
     tag: latest
@@ -84,9 +91,7 @@ postgres:
       memory: 256Mi
 
 postfix:
-  runAsUser: 5001
-  runAsGroup: 5001
-  containerPort: 2525
+  containerPort: 25
   servicePort: 25
   resources:
     requests:
@@ -94,13 +99,13 @@ postfix:
       memory: 128Mi
 
 dovecot:
-  runAsUser: 5000
+  # fsGroup for the mail volume. The master process runs as root.
   runAsGroup: 5000
   imap:
     containerPort: 10143
     servicePort: 143
   lmtp:
-    containerPort: 2424
+    containerPort: 24
     servicePort: 24
   persistence:
     size: 10Gi

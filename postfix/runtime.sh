@@ -1,7 +1,7 @@
 #!/bin/bash
-# Configure Postfix from the environment, then start it. Runs as the
-# unprivileged postfix user. Database passwords and custom SQL arrive as
-# standard base64. Kubernetes publishes container port 2525 as SMTP port 25.
+# Configure Postfix from the environment, then start it. The postfix control
+# command requires root. Database passwords and custom SQL arrive as standard
+# base64. SMTP listens on POSTFIX_SMTP_PORT (default 25).
 
 set -euo pipefail
 
@@ -15,8 +15,8 @@ die() {
     exit 1
 }
 
-if [[ "$(id -u)" -eq 0 ]]; then
-    die "refusing to run Postfix as root; map SMTP port 25 to POSTFIX_SMTP_PORT with a Service"
+if [[ "$(id -u)" -ne 0 ]]; then
+    die "postfix must run as root"
 fi
 
 b64dec() {
@@ -79,9 +79,9 @@ configure_postfix() {
     [[ -n "${MAIL_DOMAIN:-}" ]] || die "MAIL_DOMAIN is required"
     [[ -n "${POSTFIX_INTERNAL_NETWORKS:-}" ]] || die "POSTFIX_INTERNAL_NETWORKS is required"
 
-    smtp_port=${POSTFIX_SMTP_PORT:-2525}
-    [[ "$smtp_port" =~ ^[0-9]+$ && "$smtp_port" -ge 1024 && "$smtp_port" -le 65535 ]] \
-        || die "POSTFIX_SMTP_PORT must be an unprivileged port (1024-65535)"
+    smtp_port=${POSTFIX_SMTP_PORT:-25}
+    [[ "$smtp_port" =~ ^[0-9]+$ && "$smtp_port" -ge 1 && "$smtp_port" -le 65535 ]] \
+        || die "POSTFIX_SMTP_PORT must be a port number"
 
     lmtp_host=${DOVECOT_LMTP_HOST:-dovecot}
     lmtp_port=${DOVECOT_LMTP_PORT:-24}
@@ -100,8 +100,16 @@ configure_postfix() {
         hosts="${host}:${port}"
     fi
 
+    # The image build leaves the queue and config owned by the postfix user.
+    # The running master refuses files that are not owned by root.
+    postfix set-permissions
+
     write_map "$ALIAS_MAP" "$query"
     write_map "$MAILBOX_MAP" "$MAILBOX_QUERY"
+    # Owned by root so Postfix will read them, and by group postfix so the
+    # unprivileged map daemons can read the password.
+    chown root:postfix "$ALIAS_MAP" "$MAILBOX_MAP"
+    chmod 640 "$ALIAS_MAP" "$MAILBOX_MAP"
 
     joined=""
     domains=${MAIL_DOMAIN//,/ }
@@ -145,7 +153,7 @@ configure_postfix() {
     postconf -e 'smtpd_banner=$myhostname ESMTP'
     postconf -F '*/*/chroot=n'
 
-    # The packaged "smtp" service is port 25. Replace it with an unprivileged port.
+    # The packaged "smtp" service is port 25. Replace it with POSTFIX_SMTP_PORT.
     postconf -M "${smtp_port}/inet=${smtp_port} inet n - n - - smtpd"
     postconf -MX smtp/inet || true
 

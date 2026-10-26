@@ -55,12 +55,25 @@ func main() {
 	}
 
 	listenAddr := getenv("DIRECTORY_LISTEN", ":50051")
+	mailRoot := getenv("MAIL_HOME_ROOT", "/var/mail/vhosts")
+	mailUID, err := getenvInt("MAIL_UID", 5000)
+	if err != nil {
+		log.Fatal(err)
+	}
+	mailGID, err := getenvInt("MAIL_GID", 5000)
+	if err != nil {
+		log.Fatal(err)
+	}
 	lis, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 	server := grpc.NewServer()
-	directoryv1.RegisterDirectoryServer(server, directory.NewServer(directory.NewStore(pool)))
+	directoryv1.RegisterDirectoryServer(server, directory.NewServer(directory.NewStore(pool), directory.Maildir{
+		Root: mailRoot,
+		UID:  mailUID,
+		GID:  mailGID,
+	}))
 	healthServer := health.NewServer()
 	healthServer.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 	healthpb.RegisterHealthServer(server, healthServer)
@@ -125,6 +138,18 @@ func firstEnv(keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func getenvInt(key string, fallback int) (int, error) {
+	text := os.Getenv(key)
+	if text == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(text)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("%s must be a non-negative integer", key)
+	}
+	return n, nil
 }
 
 func getenv(key, fallback string) string {

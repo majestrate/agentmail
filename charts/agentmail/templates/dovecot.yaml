@@ -32,10 +32,8 @@ spec:
         {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: {{ .Values.dovecot.runAsUser }}
-        runAsGroup: {{ .Values.dovecot.runAsGroup }}
         fsGroup: {{ .Values.dovecot.runAsGroup }}
         seccompProfile:
           type: RuntimeDefault
@@ -43,7 +41,7 @@ spec:
         {{- include "agentmail.migrateContainer" . | nindent 8 }}
       containers:
         - name: dovecot
-          image: {{ include "agentmail.image" .Values.images.dovecot }}
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.dovecot) }}
           imagePullPolicy: {{ .Values.images.dovecot.pullPolicy }}
           ports:
             - name: imap
@@ -56,7 +54,18 @@ spec:
           env:
             {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
           securityContext:
-            {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - NET_BIND_SERVICE
+                - SETUID
+                - SETGID
+                - CHOWN
+                - DAC_OVERRIDE
+                - FOWNER
+                - KILL
           readinessProbe:
             tcpSocket:
               port: imap

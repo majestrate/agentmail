@@ -7,18 +7,21 @@ directory {{ include "agentmail.directoryName" . }}:{{ .Values.directory.service
 
 Mail domain {{ .Values.mail.domain }}. Agents on {{ include "agentmail.internalNetworks" . }} may submit mail.
 
-Database user, database name, and password are synced from Bitwarden Secrets
-Manager at {{ include "agentmail.bitwardenBase" . }} by {{ include "agentmail.secretName" . }}.
+Database user, database name, and password come from Secret {{ include "agentmail.secretName" . }}, written by vaultwarden-kubernetes-secrets.
 Before the pods can start:
 
-1. Install External Secrets with the Bitwarden SDK server:
-     helm install external-secrets external-secrets/external-secrets \
-       -n external-secrets --create-namespace \
-       --set bitwarden-sdk-server.enabled=true
-2. Put the SDK server CA in Secret {{ .Values.bitwarden.ca.name }} key {{ .Values.bitwarden.ca.key }}.
-3. Put the machine account access token in Secret {{ .Values.bitwarden.authSecret.name }} key {{ .Values.bitwarden.authSecret.key }}.
-4. In Bitwarden project {{ .Values.bitwarden.projectID }}, create secrets named
-   {{ .Values.bitwarden.secrets.user }}, {{ .Values.bitwarden.secrets.database }}, and
-   {{ .Values.bitwarden.secrets.passwordB64 }}. The password value is standard base64.
+1. Install the sync service and point it at your Vaultwarden server:
+     helm upgrade -i vaultwarden-kubernetes-secrets \
+       oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets \
+       --version 2.1.0 \
+       -n vaultwarden-kubernetes-secrets --create-namespace \
+       --set namespace.create=true \
+       --set-string env.config.VAULTWARDEN__SERVERURL="$VAULTWARDEN_SERVER_URL"
+2. Create a Vaultwarden item whose namespaces field includes {{ .Release.Namespace }} and whose secret-name is {{ include "agentmail.secretName" . }}.
+3. Add custom fields {{ .Values.vaultwarden.keys.user }}, {{ .Values.vaultwarden.keys.postgresUser }}, {{ .Values.vaultwarden.keys.database }}, {{ .Values.vaultwarden.keys.postgresDatabase }}, {{ .Values.vaultwarden.keys.passwordB64 }}, and {{ .Values.vaultwarden.keys.postgresPassword }}. {{ .Values.vaultwarden.keys.passwordB64 }} is standard base64. {{ .Values.vaultwarden.keys.postgresPassword }} is the plaintext password.
+{{- if .Values.images.registry }}
+
+Image pulls use Secret {{ include "agentmail.registrySecretName" . }}. vaultwarden-kubernetes-secrets writes that Secret from a login whose secret-type is kubernetes.io/dockerconfigjson, whose secret-name is {{ include "agentmail.registrySecretName" . }}, and whose namespaces field includes {{ .Release.Namespace }}. The item username and password are the registry login. docker-config-json-server is the registry host.
+{{- end }}
 
 Point networkPolicy.nodeCIDRs at the node network so kubelet probes stay allowed.

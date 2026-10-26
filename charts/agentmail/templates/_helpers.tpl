@@ -46,12 +46,38 @@ app.kubernetes.io/instance: {{ .context.Release.Name }}
 {{- printf "%s-mail" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{/*
+Secret written by vaultwarden-kubernetes-secrets. An explicit name is used
+as given so it stays equal to the item's secret-name field.
+*/}}
 {{- define "agentmail.secretName" -}}
-{{- printf "%s-mail-db" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- $name := .Values.vaultwarden.secretName -}}
+{{- if $name -}}
+{{- $name -}}
+{{- else -}}
+{{- printf "%s-mail-db" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
 {{- end }}
 
-{{- define "agentmail.secretStoreName" -}}
-{{- printf "%s-bitwarden" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{/*
+dockerconfigjson Secret written by vaultwarden-kubernetes-secrets. Pods
+reference it when images.registry is set. An explicit name stays equal to
+the item's secret-name field.
+*/}}
+{{- define "agentmail.registrySecretName" -}}
+{{- $name := .Values.vaultwarden.registrySecretName -}}
+{{- if $name -}}
+{{- $name -}}
+{{- else -}}
+{{- printf "%s-registry" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
+{{- define "agentmail.imagePullSecrets" -}}
+{{- if .Values.images.registry }}
+imagePullSecrets:
+  - name: {{ include "agentmail.registrySecretName" . }}
+{{- end }}
 {{- end }}
 
 {{- define "agentmail.postgresName" -}}
@@ -71,14 +97,21 @@ app.kubernetes.io/instance: {{ .context.Release.Name }}
 {{- end }}
 
 {{/*
-Self-hosted Bitwarden base with no trailing slash.
+Image reference. .registry is the registry host or host/path from
+DOCKER_REGISTRY. .image is one images.* entry. An empty registry leaves the
+repository unchanged. A repository that already names a registry host (a
+component with a dot or colon, or localhost) is left unchanged. The registry
+is prepended only to a short name, such as agentmail-postfix.
 */}}
-{{- define "agentmail.bitwardenBase" -}}
-{{- trimSuffix "/" .Values.bitwarden.serverURL }}
-{{- end }}
-
 {{- define "agentmail.image" -}}
-{{- printf "%s:%s" .repository .tag }}
+{{- $registry := trimSuffix "/" (default "" .registry) -}}
+{{- $repo := .image.repository -}}
+{{- $first := first (splitList "/" $repo) -}}
+{{- if and $registry (not (or (contains "." $first) (contains ":" $first) (eq $first "localhost"))) -}}
+{{- printf "%s/%s:%s" $registry $repo .image.tag -}}
+{{- else -}}
+{{- printf "%s:%s" .image.repository .image.tag -}}
+{{- end -}}
 {{- end }}
 
 {{- define "agentmail.containerSecurityContext" -}}
@@ -93,29 +126,29 @@ capabilities:
 {{- end }}
 
 {{/*
-Database role, database name, and base64 password. Synced from Bitwarden.
+Database role, database name, and base64 password from the synced Secret.
 */}}
 {{- define "agentmail.pgsqlSecretEnv" -}}
 - name: POSTFIX_PGSQL_USER
   valueFrom:
     secretKeyRef:
       name: {{ include "agentmail.secretName" . }}
-      key: POSTFIX_PGSQL_USER
+      key: {{ .Values.vaultwarden.keys.user }}
 - name: POSTFIX_PGSQL_DBNAME
   valueFrom:
     secretKeyRef:
       name: {{ include "agentmail.secretName" . }}
-      key: POSTFIX_PGSQL_DBNAME
+      key: {{ .Values.vaultwarden.keys.database }}
 - name: POSTFIX_PGSQL_PASSWORD_B64
   valueFrom:
     secretKeyRef:
       name: {{ include "agentmail.secretName" . }}
-      key: POSTFIX_PGSQL_PASSWORD_B64
+      key: {{ .Values.vaultwarden.keys.passwordB64 }}
 {{- end }}
 
 {{- define "agentmail.migrateContainer" -}}
 - name: migrate
-  image: {{ include "agentmail.image" .Values.images.directory }}
+  image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.directory) }}
   imagePullPolicy: {{ .Values.images.directory.pullPolicy }}
   args:
     - migrate
@@ -134,14 +167,17 @@ Database role, database name, and base64 password. Synced from Bitwarden.
 {{- end }}
 
 {{/*
-Reject values the containers or Bitwarden store would refuse.
+Reject values the containers would refuse.
 */}}
 {{- define "agentmail.validate" -}}
-{{- $ports := list .Values.postfix.containerPort .Values.dovecot.imap.containerPort .Values.dovecot.lmtp.containerPort .Values.directory.containerPort }}
-{{- range $ports }}
-{{- if or (lt (int .) 1024) (gt (int .) 65535) }}
-{{- fail (printf "container listen ports must be between 1024 and 65535, got %v" .) }}
+{{- $mailPorts := list .Values.postfix.containerPort .Values.dovecot.imap.containerPort .Values.dovecot.lmtp.containerPort }}
+{{- range $mailPorts }}
+{{- if or (lt (int .) 1) (gt (int .) 65535) }}
+{{- fail (printf "mail listen ports must be between 1 and 65535, got %v" .) }}
 {{- end }}
+{{- end }}
+{{- if or (lt (int .Values.directory.containerPort) 1024) (gt (int .Values.directory.containerPort) 65535) }}
+{{- fail (printf "directory listen port must be between 1024 and 65535, got %v" .Values.directory.containerPort) }}
 {{- end }}
 {{- range $cidr := concat .Values.networkPolicy.agentCIDRs .Values.networkPolicy.nodeCIDRs }}
 {{- if or (eq $cidr "0.0.0.0/0") (eq $cidr "::/0") }}
@@ -151,33 +187,27 @@ Reject values the containers or Bitwarden store would refuse.
 {{- if not .Values.networkPolicy.agentCIDRs }}
 {{- fail "networkPolicy.agentCIDRs is required" }}
 {{- end }}
-{{- $base := include "agentmail.bitwardenBase" . }}
-{{- if not $base }}
-{{- fail "bitwarden.serverURL is required when rendering the chart; set it from BITWARDEN_SERVER_URL" }}
+{{- $secretName := .Values.vaultwarden.secretName }}
+{{- if and $secretName (or (gt (len $secretName) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $secretName))) }}
+{{- fail "vaultwarden.secretName must be a DNS label of at most 63 characters, matching the item secret-name" }}
 {{- end }}
-{{- if not (hasPrefix "https://" $base) }}
-{{- fail "bitwarden.serverURL must be an https URL" }}
+{{- $registrySecretName := .Values.vaultwarden.registrySecretName }}
+{{- if and $registrySecretName (or (gt (len $registrySecretName) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $registrySecretName))) }}
+{{- fail "vaultwarden.registrySecretName must be a DNS label of at most 63 characters, matching the item secret-name" }}
 {{- end }}
-{{- if not .Values.bitwarden.organizationID }}
-{{- fail "bitwarden.organizationID is required" }}
+{{- $keys := list .Values.vaultwarden.keys.user .Values.vaultwarden.keys.database .Values.vaultwarden.keys.passwordB64 .Values.vaultwarden.keys.postgresUser .Values.vaultwarden.keys.postgresDatabase .Values.vaultwarden.keys.postgresPassword }}
+{{- range $keys }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" .) }}
+{{- fail (printf "vaultwarden secret key %q must contain only letters, digits, '.', '_', and '-'" .) }}
 {{- end }}
-{{- if not .Values.bitwarden.projectID }}
-{{- fail "bitwarden.projectID is required" }}
-{{- end }}
-{{- if or (not .Values.bitwarden.authSecret.name) (not .Values.bitwarden.authSecret.key) }}
-{{- fail "bitwarden.authSecret.name and bitwarden.authSecret.key are required" }}
-{{- end }}
-{{- if not (has .Values.bitwarden.ca.type (list "Secret" "ConfigMap")) }}
-{{- fail "bitwarden.ca.type must be Secret or ConfigMap" }}
-{{- end }}
-{{- if or (not .Values.bitwarden.ca.name) (not .Values.bitwarden.ca.key) }}
-{{- fail "bitwarden.ca.name and bitwarden.ca.key are required" }}
-{{- end }}
-{{- if or (not .Values.bitwarden.secrets.user) (not .Values.bitwarden.secrets.database) (not .Values.bitwarden.secrets.passwordB64) }}
-{{- fail "bitwarden.secrets.user, database, and passwordB64 are required" }}
 {{- end }}
 {{- $ssl := list "disable" "allow" "prefer" "require" "verify-ca" "verify-full" }}
 {{- if not (has .Values.mail.pgsslmode $ssl) }}
 {{- fail (printf "mail.pgsslmode %s is not a libpq sslmode" .Values.mail.pgsslmode) }}
+{{- end }}
+{{- if .Values.images.registry }}
+{{- if or (contains "://" .Values.images.registry) (contains " " .Values.images.registry) }}
+{{- fail "images.registry must be a registry host or host/path, without a URL scheme; set it from DOCKER_REGISTRY" }}
+{{- end }}
 {{- end }}
 {{- end }}

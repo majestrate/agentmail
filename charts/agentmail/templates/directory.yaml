@@ -10,21 +10,32 @@ spec:
   selector:
     matchLabels:
       {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 6 }}
+  strategy:
+    type: Recreate
   template:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  {{- include "agentmail.selectorLabels" (dict "name" "dovecot" "context" .) | nindent 18 }}
+              topologyKey: kubernetes.io/hostname
       securityContext:
         runAsNonRoot: true
         runAsUser: {{ .Values.directory.runAsUser }}
         runAsGroup: {{ .Values.directory.runAsGroup }}
+        fsGroup: {{ .Values.mail.gid }}
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: directory
-          image: {{ include "agentmail.image" .Values.images.directory }}
+          image: {{ include "agentmail.image" (dict "registry" .Values.images.registry "image" .Values.images.directory) }}
           imagePullPolicy: {{ .Values.images.directory.pullPolicy }}
           ports:
             - name: grpc
@@ -35,7 +46,15 @@ spec:
           env:
             {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
           securityContext:
-            {{- include "agentmail.containerSecurityContext" . | nindent 12 }}
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+              add:
+                - CHOWN
+          volumeMounts:
+            - name: mail
+              mountPath: /var/mail
           readinessProbe:
             tcpSocket:
               port: grpc
@@ -44,6 +63,10 @@ spec:
               port: grpc
           resources:
             {{- toYaml .Values.directory.resources | nindent 12 }}
+      volumes:
+        - name: mail
+          persistentVolumeClaim:
+            claimName: {{ include "agentmail.dovecotName" . }}-data
 ---
 apiVersion: v1
 kind: Service

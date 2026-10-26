@@ -1,14 +1,15 @@
-# Dovecot IMAP and LMTP on Debian stable. The process runs as vmail (uid 5000)
-# and listens on unprivileged ports. A Kubernetes Service maps 143 to the IMAP
-# port and 24 to the LMTP port. Mailboxes are Maildir files under /var/mail,
+# Dovecot IMAP and LMTP on Debian trixie. The master runs as root so it can
+# set up its login processes. Mailbox files are owned by vmail (uid 5000).
+# LMTP listens on port 24. A Kubernetes Service maps 143 to the IMAP port.
+# Mailboxes are Maildir files under /var/mail,
 # which is a persistent volume.
 
-FROM debian:stable
+FROM debian:trixie
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PGSSLMODE=prefer \
     DOVECOT_IMAP_PORT=10143 \
-    DOVECOT_LMTP_LISTEN_PORT=2424 \
+    DOVECOT_LMTP_LISTEN_PORT=24 \
     POSTFIX_PGSQL_PORT=5432
 
 RUN apt-get update \
@@ -28,8 +29,6 @@ RUN apt-get update \
 
 COPY dovecot/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod 755 /usr/local/bin/docker-entrypoint.sh
-
-USER 5000:5000
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["dovecot", "-F"]

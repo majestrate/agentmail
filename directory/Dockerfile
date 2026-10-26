@@ -12,7 +12,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -trimpath -o /out/directory ./cmd/directory
 
-FROM debian:stable
+FROM debian:trixie
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PGSSLMODE=prefer \

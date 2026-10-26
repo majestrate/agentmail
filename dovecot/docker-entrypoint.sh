@@ -1,6 +1,7 @@
 #!/bin/bash
-# Write Dovecot's SQL auth config and run as vmail. The database password
-# arrives as standard base64. IMAP and LMTP listen above port 1023.
+# Write Dovecot's SQL auth config and start the master as root. Mailbox files
+# stay owned by vmail. The database password arrives as standard base64.
+# IMAP, IMAPS, and LMTP may listen on privileged ports.
 
 set -euo pipefail
 
@@ -9,8 +10,8 @@ die() {
     exit 1
 }
 
-if [[ "$(id -u)" -eq 0 ]]; then
-    die "refusing to run Dovecot as root; map IMAP 143 and LMTP 24 with a Service"
+if [[ "$(id -u)" -ne 0 ]]; then
+    die "dovecot must run as root"
 fi
 
 b64dec() {
@@ -43,14 +44,14 @@ configure_dovecot() {
     password=$(b64dec POSTFIX_PGSQL_PASSWORD_B64 "$POSTFIX_PGSQL_PASSWORD_B64")
     sslmode=${PGSSLMODE:-prefer}
     imap_port=${DOVECOT_IMAP_PORT:-10143}
-    lmtp_port=${DOVECOT_LMTP_LISTEN_PORT:-2424}
+    lmtp_port=${DOVECOT_LMTP_LISTEN_PORT:-24}
 
     [[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || die "POSTFIX_PGSQL_HOST must be a hostname"
     [[ "$port" =~ ^[0-9]+$ ]] || die "POSTFIX_PGSQL_PORT must be a number"
     [[ "$user" =~ ^[A-Za-z0-9._-]+$ ]] || die "POSTFIX_PGSQL_USER must be a plain identifier"
     [[ "$dbname" =~ ^[A-Za-z0-9._-]+$ ]] || die "POSTFIX_PGSQL_DBNAME must be a plain identifier"
-    [[ "$imap_port" =~ ^[0-9]+$ && "$imap_port" -ge 1024 ]] || die "DOVECOT_IMAP_PORT must be >= 1024"
-    [[ "$lmtp_port" =~ ^[0-9]+$ && "$lmtp_port" -ge 1024 ]] || die "DOVECOT_LMTP_LISTEN_PORT must be >= 1024"
+    [[ "$imap_port" =~ ^[0-9]+$ && "$imap_port" -ge 1 && "$imap_port" -le 65535 ]] || die "DOVECOT_IMAP_PORT must be a port number"
+    [[ "$lmtp_port" =~ ^[0-9]+$ && "$lmtp_port" -ge 1 && "$lmtp_port" -le 65535 ]] || die "DOVECOT_LMTP_LISTEN_PORT must be a port number"
     case "$sslmode" in
         disable|allow|prefer|require|verify-ca|verify-full) ;;
         *) die "invalid PGSSLMODE ${sslmode}" ;;
@@ -82,11 +83,14 @@ namespace inbox {
 
 sql_driver = pgsql
 pgsql ${host} {
-  port = ${port}
-  user = ${user}
-  password = ${quoted}
-  dbname = ${dbname}
-  sslmode = ${sslmode}
+  parameters {
+    host = ${host}
+    port = ${port}
+    user = ${user}
+    password = ${quoted}
+    dbname = ${dbname}
+    sslmode = ${sslmode}
+  }
 }
 
 passdb sql {
@@ -105,6 +109,9 @@ userdb static {
 service imap-login {
   inet_listener imap {
     port = ${imap_port}
+  }
+  inet_listener imaps {
+    port = 993
   }
 }
 
