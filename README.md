@@ -32,7 +32,7 @@ Postfix and Dovecot run as root. Postfix rejects its control command for any oth
 
 | Process | UID | Container port | Service port |
 | --- | --- | --- | --- |
-| Dovecot master | 0 | 10143, 24 | 143, 24 |
+| Dovecot master | 0 | 143, 993, 24 | 143, 24 |
 | Postfix SMTP | 0 | 25 | 25 |
 | Directory gRPC | 5002 | 50051 | 50051 |
 | Postgres | 999 | 5432 | 5432 |

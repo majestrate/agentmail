@@ -1,6 +1,6 @@
 # Dovecot IMAP and LMTP on Debian trixie. The master runs as root so it can
 # set up its login processes. Mailbox files are owned by vmail (uid 5000).
-# LMTP listens on port 24. A Kubernetes Service maps 143 to the IMAP port.
+# IMAP listens on port 143, IMAPS on 993, and LMTP on 24.
 # Mailboxes are Maildir files under /var/mail,
 # which is a persistent volume.
 
@@ -8,7 +8,7 @@ FROM debian:trixie
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PGSSLMODE=prefer \
-    DOVECOT_IMAP_PORT=10143 \
+    DOVECOT_IMAP_PORT=143 \
     DOVECOT_LMTP_LISTEN_PORT=24 \
     POSTFIX_PGSQL_PORT=5432
 

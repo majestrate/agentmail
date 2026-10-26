@@ -43,7 +43,7 @@ configure_dovecot() {
     [[ -v POSTFIX_PGSQL_PASSWORD_B64 ]] || die "POSTFIX_PGSQL_PASSWORD_B64 is required"
     password=$(b64dec POSTFIX_PGSQL_PASSWORD_B64 "$POSTFIX_PGSQL_PASSWORD_B64")
     sslmode=${PGSSLMODE:-prefer}
-    imap_port=${DOVECOT_IMAP_PORT:-10143}
+    imap_port=${DOVECOT_IMAP_PORT:-143}
     lmtp_port=${DOVECOT_LMTP_LISTEN_PORT:-24}
 
     [[ "$host" =~ ^[A-Za-z0-9._-]+$ ]] || die "POSTFIX_PGSQL_HOST must be a hostname"

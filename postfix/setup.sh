@@ -33,8 +33,6 @@ groupmod -g 5001 postfix
 usermod -u 5001 postfix
 postfix set-permissions
 
-chown -R postfix:postfix /etc/postfix /var/lib/postfix
-chown postfix:postfix /var/spool/postfix /var/spool/postfix/pid
 # The runtime user replaces this with POSTFIX_MYHOSTNAME.
 printf '%s\n' localhost > /etc/mailname
 chown postfix:postfix /etc/mailname

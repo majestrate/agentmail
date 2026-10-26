@@ -66,6 +66,7 @@ spec:
                 - DAC_OVERRIDE
                 - FOWNER
                 - KILL
+                - SYS_CHROOT
           readinessProbe:
             tcpSocket:
               port: imap

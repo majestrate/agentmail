@@ -103,6 +103,9 @@ configure_postfix() {
     # The image build leaves the queue and config owned by the postfix user.
     # The running master refuses files that are not owned by root.
     postfix set-permissions
+    chown root:root /etc/postfix/sasl /etc/postfix/postfix-files.d/pgsql.files
+    chmod 755 /etc/postfix/sasl
+    chmod 644 /etc/postfix/postfix-files.d/pgsql.files
 
     write_map "$ALIAS_MAP" "$query"
     write_map "$MAILBOX_MAP" "$MAILBOX_QUERY"

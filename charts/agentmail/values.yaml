@@ -102,7 +102,7 @@ dovecot:
   # fsGroup for the mail volume. The master process runs as root.
   runAsGroup: 5000
   imap:
-    containerPort: 10143
+    containerPort: 143
     servicePort: 143
   lmtp:
     containerPort: 24

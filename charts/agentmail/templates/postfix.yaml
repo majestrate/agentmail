@@ -46,6 +46,7 @@ spec:
                 - CHOWN
                 - DAC_OVERRIDE
                 - FOWNER
+                - FSETID
                 - KILL
           readinessProbe:
             tcpSocket:
