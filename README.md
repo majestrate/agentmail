@@ -12,6 +12,7 @@ Mail is not relayed to the public internet. `default_transport` and `relay_trans
 | `dovecot/` | Debian trixie Dovecot image. IMAP and LMTP over TCP. Maildir under `/var/mail/vhosts`. |
 | `directory/` | Directory gRPC image. |
 | `cmd/directory` | Process entrypoint. `directory migrate` applies migrations and exits. A normal start migrates, then serves. |
+| `cmd/agentmail` | Management client for the directory gRPC service. |
 | `proto/agentmail/directory/v1` | `agentmail.directory.v1` API. |
 | `internal/migrate` | Goose migrations, embedded in the binary. |
 | `internal/directory` | gRPC handlers. SQL lives in `sql/` and is prepared on each pool connection. |
@@ -47,7 +48,7 @@ From the repository root, `make` builds all three images. The Dockerfiles copy f
 make
 ```
 
-That produces `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`, and the directory gRPC server at `bin/directory`. `make server` generates the protobuf code and builds only that server. Each image is also its own target: `make postfix`, `make dovecot`, or `make directory`. The directory image target generates the protobuf code first.
+That produces `agentmail-postfix`, `agentmail-dovecot`, and `agentmail-directory`, the directory gRPC server at `bin/directory`, and the management client at `bin/agentmail`. `make server` generates the protobuf code and builds those two binaries. Each image is also its own target: `make postfix`, `make dovecot`, or `make directory`. The directory image target generates the protobuf code first. The directory image includes `/usr/local/bin/agentmail`.
 
 `make charts` compiles `charts/agentmail` to `dist/agentmail.yaml` and the Vaultwarden Kubernetes secrets chart 2.1.0 to `dist/vaultwarden-kubernetes-secrets.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. `VAULTWARDEN_SERVER_URL` is required and must be an `https` URL. The chart does not store it.
 
@@ -59,7 +60,7 @@ make charts \
 
 `VAULTWARDEN_ORGANIZATION_ID` and `VAULTWARDEN_COLLECTION_ID` are optional. When set, they are passed to the sync chart.
 
-`make apply` renders both charts and creates the `vaultwarden-kubernetes-secrets` namespace when it is missing. It then writes Secret `vaultwarden-kubernetes-secrets` in that namespace from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD`. `BW_MASTER_PASSWORD` is used when `VAULTWARDEN__MASTERPASSWORD` is unset. The target applies `dist/vaultwarden-kubernetes-secrets.yaml`, creates the `agentmail` namespace when it is missing, and applies `dist/agentmail.yaml`. `kubectl` must be on `PATH`. A later apply reuses the Secret when those variables are unset.
+`make apply` runs `helm-add`, `helm-update`, and `helm-install` first, then renders the charts and applies `dist/agentmail.yaml`. Istio is installed before the mail manifests, which include its custom resources. `helm-install` writes Secret `vaultwarden-kubernetes-secrets` from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD` (`BW_MASTER_PASSWORD` when that is unset) and installs the sync chart with Helm. A later apply reuses the Secret when those variables are unset. `kubectl` must be on `PATH`.
 
 ```shell
 make apply \
@@ -70,7 +71,17 @@ make apply \
   VAULTWARDEN__MASTERPASSWORD="$VAULTWARDEN__MASTERPASSWORD"
 ```
 
-`make teardown` deletes the `agentmail` namespace and the resources in it, including the mail and Postgres volumes. It also deletes the `vaultwarden-kubernetes-secrets` namespace, including the sync Deployment and its credential Secret, and that release's ClusterRole and ClusterRoleBinding. `kubectl` must be on `PATH`. `NAMESPACE` selects the mail namespace and must be a DNS label. The default is `agentmail`.
+`make helm-add` adds the Istio Helm repository. `make helm-update` refreshes it. `make helm-install` does both, then `helm upgrade --install` for `istio-base` and `istiod` at `ISTIO_VERSION` (1.31.3) and for `vaultwarden-kubernetes-secrets` at `VWK8S_VERSION` (2.1.0). The Vaultwarden chart is OCI, so it has no repository to add. Istio uses the sidecar profile (`defaultRevision=default`). `make apply` depends on `helm-install`, so that order runs before the mail chart. `helm-install` alone does not install `charts/agentmail`. A second run upgrades the external releases in place. `VAULTWARDEN_SERVER_URL` is required. The sync credential Secret is written before the Vaultwarden release.
+
+```shell
+make helm-install \
+  VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
+  BW_CLIENTID="$BW_CLIENTID" \
+  BW_CLIENTSECRET="$BW_CLIENTSECRET" \
+  VAULTWARDEN__MASTERPASSWORD="$VAULTWARDEN__MASTERPASSWORD"
+```
+
+`make teardown` reverses `make apply`. It deletes the mail namespace, including the mail and Postgres volumes, while `istiod` is still installed. It then uninstalls the `vaultwarden-kubernetes-secrets` Helm release and deletes that namespace, including the sync Deployment and its credential Secret, plus that release's ClusterRole and ClusterRoleBinding. It uninstalls `istiod` and `istio-base`, then deletes the `istio-system` namespace. Missing releases and namespaces are left alone. `kubectl` and `helm` must be on `PATH`. `NAMESPACE` selects the mail namespace and must be a DNS label. The default is `agentmail`. `default`, `kube-system`, `kube-public`, and `kube-node-lease` are refused.
 
 ```shell
 make teardown
@@ -88,18 +99,9 @@ make push DOCKER_REGISTRY="$DOCKER_REGISTRY"
 
 Database credentials come from [vaultwarden-kubernetes-secrets](https://github.com/antoniolago/vaultwarden-kubernetes-secrets). That service copies a Vaultwarden item into a Kubernetes Secret. This chart reads the Secret and does not store a Vaultwarden server URL, the database role, the database name, or the password.
 
-`make apply` installs this sync service from `dist/vaultwarden-kubernetes-secrets.yaml` and writes its credential Secret from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD`. Vaultwarden organization API keys do not work with its API, so the client id belongs to a user. The same install through Helm is:
+`make helm-install` installs this sync service with Helm from `oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets` at version 2.1.0, in namespace `vaultwarden-kubernetes-secrets`, with `namespace.create=true` and `VAULTWARDEN__SERVERURL` set from `VAULTWARDEN_SERVER_URL`. The install uses `--take-ownership`, so a namespace and objects created earlier by `kubectl apply` can join the release. It writes Secret `vaultwarden-kubernetes-secrets` from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD` before that release. Vaultwarden organization API keys do not work with its API, so the client id belongs to a user. `make apply` runs that install before it applies the mail chart.
 
-```shell
-helm upgrade -i vaultwarden-kubernetes-secrets \
-  oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets \
-  --version 2.1.0 \
-  -n vaultwarden-kubernetes-secrets --create-namespace \
-  --set namespace.create=true \
-  --set-string env.config.VAULTWARDEN__SERVERURL="$VAULTWARDEN_SERVER_URL"
-```
-
-`make charts` writes the same release to `dist/vaultwarden-kubernetes-secrets.yaml`. The sync Deployment reads Secret `vaultwarden-kubernetes-secrets` (`BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD`). `make apply` creates that Secret before it applies the Deployment.
+`make charts` writes the same release to `dist/vaultwarden-kubernetes-secrets.yaml`. The installed release is the Helm one from `make helm-install`. The sync Deployment reads Secret `vaultwarden-kubernetes-secrets` (`BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD`).
 
 `scripts/generate-vaultwarden-secrets.sh` generates the database role, database name, and password with `openssl` and stores them as one Vaultwarden login. The password is hex, so the Postfix map line stays a single value. `POSTFIX_PGSQL_PASSWORD_B64` is that password in standard base64, one line. `POSTGRES_PASSWORD` is the password itself. The script needs the Bitwarden CLI (`bw`) and a personal API key. When `BW_MASTER_PASSWORD` is unset, the script prompts for the master password and does not echo it.
 
@@ -157,7 +159,47 @@ helm install agentmail charts/agentmail -n agentmail --create-namespace \
 
 `charts/agentmail/values.yaml` holds the mail domain, hostname, image names, ports, volume sizes, and the Vaultwarden Secret key names. `mail.domain` defaults to `example.com`. A release whose name contains `agentmail` keeps that name, so the default Secret is `agentmail-mail-db`. Set `vaultwarden.secretName` when the item uses another `secret-name`.
 
-After install, agents on the agent CIDR use SMTP on Service `agentmail-postfix` port 25, IMAP on `agentmail-dovecot` port 143, and the directory on `agentmail-directory` port 50051.
+After install, agents on the agent CIDR use SMTP on Service `agentmail-postfix` port 25 and IMAP on `agentmail-dovecot` port 143.
+
+## Istio
+
+Istio authenticates the directory gRPC port. Postfix, Dovecot, Postgres, SMTP, IMAP, and LMTP have `sidecar.istio.io/inject: "false"`. The directory pod is the injected workload. Its sidecar listens for gRPC, and Postgres dials from that pod bypass the proxy. `istio.enabled` defaults to true.
+
+Install the sidecar profile before applying this chart. Ambient mode is a different data plane and is not the one this chart uses. `make helm-install` installs Istio 1.31.3 from `https://blob.istio.io/istio-release/charts`: `istio-base` with `defaultRevision=default`, then `istiod`, both in namespace `istio-system`.
+
+The chart then installs a directory ServiceAccount, a `PeerAuthentication` in `STRICT` mode selected to the directory workload, a `DestinationRule` with `ISTIO_MUTUAL` on the directory Service port, and a `Sidecar` whose ingress is the gRPC port. The directory NetworkPolicy allows the pod to reach `istiod` on port 15012 and to reach its own gRPC port. Set `istio.enabled` to false to render the chart without those resources.
+
+Apply the mail chart after `istiod` is ready. The directory pod has to be created again once the injector webhook exists, or the gRPC port stays plaintext.
+
+## Management client
+
+`agentmail` calls the directory service in plaintext. Run it in the directory container so the sidecar can present a mesh certificate. Dial the Service DNS. A connection to `127.0.0.1` does not pass through the sidecar.
+
+```shell
+kubectl exec -n agentmail deploy/agentmail-directory -c directory -- agentmail users ls
+```
+
+`AGENTMAIL_SERVER` in that container is `agentmail-directory.agentmail.svc.cluster.local:50051`. `-server` and `--server` override it.
+
+```text
+agentmail users create -address a@example.com -display-name A -password secret
+agentmail users get -id 1
+agentmail users ls
+agentmail users update -id 1 -display-name B
+agentmail users delete -id 1
+agentmail lists create -address team@example.com -display-name Team
+agentmail lists get -address team@example.com
+agentmail lists ls
+agentmail lists update -id 1 -display-name Team
+agentmail lists delete -id 1
+agentmail members add -list 1 -user 4
+agentmail members remove -list 1 -user 4
+agentmail members set -list 1 -users 4,5
+agentmail members ls -list 1
+agentmail memberships ls -user 4
+```
+
+List commands follow page tokens. `-page-size` defaults to 100.
 
 ## Directory API
 
@@ -167,6 +209,6 @@ Addresses are bare (`user@example.com`). `Name <user@example.com>` is rejected. 
 
 IMAP passwords are bcrypt, stored as Dovecot `{BLF-CRYPT}` hashes. The API never returns them. Passwords in the environment and in Postfix map files are standard base64, decoded at startup. Nothing in this project uses percent-encoding.
 
-`go test ./...` covers address validation, base64, password hashing, embedded SQL, and the migration list. It does not open PostgreSQL.
+`go test ./...` covers address validation, base64, password hashing, embedded SQL, the migration list, and the management client. It does not open PostgreSQL.
 
 Schema changes belong in `internal/migrate/migrations/`. The current migration is `00001_directory.sql`.

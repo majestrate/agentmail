@@ -16,8 +16,13 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "directory" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+      {{- if .Values.istio.enabled }}
+      serviceAccountName: {{ include "agentmail.directoryName" . }}
+      {{- end }}
       {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
       affinity:
         podAffinity:
@@ -44,6 +49,8 @@ spec:
             - configMapRef:
                 name: {{ include "agentmail.configMapName" . }}
           env:
+            - name: AGENTMAIL_SERVER
+              value: {{ printf "%s.%s.svc.cluster.local:%v" (include "agentmail.directoryName" .) .Release.Namespace .Values.directory.servicePort | quote }}
             {{- include "agentmail.pgsqlSecretEnv" . | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false

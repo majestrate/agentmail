@@ -138,6 +138,13 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.directory.containerPort }}
+    {{- if .Values.istio.enabled }}
+    - from:
+        - podSelector: {}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.directory.containerPort }}
+    {{- end }}
   egress:
     - to:
         - podSelector:
@@ -146,6 +153,22 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
+    {{- if .Values.istio.enabled }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.istio.xdsPort }}
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.directory.containerPort }}
+    {{- end }}
     - ports:
         - protocol: UDP
           port: 53

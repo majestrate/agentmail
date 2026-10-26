@@ -97,6 +97,20 @@ imagePullSecrets:
 {{- end }}
 
 {{/*
+Pod annotations. Only the directory workload joins the mesh, and only its
+gRPC listener is on the proxy. Postgres dials bypass the sidecar.
+*/}}
+{{- define "agentmail.meshAnnotations" -}}
+{{- if and .context.Values.istio.enabled (eq .component "directory") -}}
+sidecar.istio.io/inject: "true"
+sidecar.istio.io/nativeSidecar: "true"
+traffic.sidecar.istio.io/excludeOutboundPorts: {{ .context.Values.postgres.port | quote }}
+{{- else -}}
+sidecar.istio.io/inject: "false"
+{{- end -}}
+{{- end }}
+
+{{/*
 Image reference. .registry is the registry host or host/path from
 DOCKER_REGISTRY. .image is one images.* entry. An empty registry leaves the
 repository unchanged. A repository that already names a registry host (a
@@ -208,6 +222,15 @@ Reject values the containers would refuse.
 {{- if .Values.images.registry }}
 {{- if or (contains "://" .Values.images.registry) (contains " " .Values.images.registry) }}
 {{- fail "images.registry must be a registry host or host/path, without a URL scheme; set it from DOCKER_REGISTRY" }}
+{{- end }}
+{{- end }}
+{{- if .Values.istio.enabled }}
+{{- $istioNamespace := .Values.istio.systemNamespace }}
+{{- if or (gt (len $istioNamespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $istioNamespace)) }}
+{{- fail "istio.systemNamespace must be a DNS label" }}
+{{- end }}
+{{- if or (lt (int .Values.istio.xdsPort) 1) (gt (int .Values.istio.xdsPort) 65535) }}
+{{- fail (printf "istio.xdsPort must be between 1 and 65535, got %v" .Values.istio.xdsPort) }}
 {{- end }}
 {{- end }}
 {{- end }}

@@ -14,6 +14,8 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "postfix" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       {{- include "agentmail.imagePullSecrets" . | nindent 6 }}
@@ -48,6 +50,14 @@ spec:
                 - FOWNER
                 - FSETID
                 - KILL
+          # set-permissions and postfix check run before smtpd binds.
+          # Liveness waits until this probe succeeds, so a slow start is not killed.
+          startupProbe:
+            tcpSocket:
+              port: smtp
+            periodSeconds: 5
+            timeoutSeconds: 1
+            failureThreshold: 36
           readinessProbe:
             tcpSocket:
               port: smtp

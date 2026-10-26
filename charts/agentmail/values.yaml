@@ -124,3 +124,12 @@ directory:
     requests:
       cpu: 50m
       memory: 64Mi
+
+# Mutual TLS for the directory gRPC port. SMTP, IMAP, LMTP, and Postgres
+# are not in the mesh. Install istio-base and istiod, sidecar profile,
+# before applying this chart. The agentmail client is plaintext and runs
+# in the directory pod; that pod's sidecar authenticates the call.
+istio:
+  enabled: true
+  systemNamespace: istio-system
+  xdsPort: 15012

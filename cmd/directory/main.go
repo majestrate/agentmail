@@ -68,6 +68,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	// Plaintext. The directory pod's Istio sidecar authenticates clients.
 	server := grpc.NewServer()
 	directoryv1.RegisterDirectoryServer(server, directory.NewServer(directory.NewStore(pool), directory.Maildir{
 		Root: mailRoot,

@@ -1,5 +1,7 @@
 # gRPC directory service. Runs as uid 5002 and listens on 50051.
 # Migrations and SQL queries are embedded in the binary.
+# The image also ships the agentmail management client. The server and
+# the client speak plaintext. The pod sidecar does mutual TLS.
 #
 # Build from the repo root so COPY stays repo-root-relative:
 #   docker build -f directory/Dockerfile -t agentmail-directory .
@@ -10,7 +12,8 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /out/directory ./cmd/directory
+RUN CGO_ENABLED=0 go build -trimpath -o /out/directory ./cmd/directory \
+    && CGO_ENABLED=0 go build -trimpath -o /out/agentmail ./cmd/agentmail
 
 FROM debian:trixie
 
@@ -26,6 +29,7 @@ RUN apt-get update \
     && useradd --system --uid 5002 --home-dir /nonexistent --shell /usr/sbin/nologin directory
 
 COPY --from=build /out/directory /usr/local/bin/directory
+COPY --from=build /out/agentmail /usr/local/bin/agentmail
 
 USER 5002:5002
 

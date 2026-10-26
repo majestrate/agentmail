@@ -30,6 +30,8 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "dovecot" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       {{- include "agentmail.imagePullSecrets" . | nindent 6 }}

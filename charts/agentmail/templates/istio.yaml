@@ -1,0 +1,58 @@
+{{- if .Values.istio.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+automountServiceAccountToken: false
+---
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 6 }}
+  mtls:
+    mode: STRICT
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+spec:
+  host: {{ include "agentmail.directoryName" . }}.{{ .Release.Namespace }}.svc.cluster.local
+  trafficPolicy:
+    portLevelSettings:
+      - port:
+          number: {{ .Values.directory.servicePort }}
+        tls:
+          mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1
+kind: Sidecar
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.directoryName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "directory" "context" .) | nindent 4 }}
+spec:
+  workloadSelector:
+    labels:
+      {{- include "agentmail.selectorLabels" (dict "name" "directory" "context" .) | nindent 6 }}
+  ingress:
+    - port:
+        number: {{ .Values.directory.containerPort }}
+        protocol: GRPC
+        name: grpc
+      defaultEndpoint: {{ printf "127.0.0.1:%v" .Values.directory.containerPort }}
+{{- end }}

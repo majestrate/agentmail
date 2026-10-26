@@ -30,6 +30,8 @@ spec:
     metadata:
       labels:
         {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 8 }}
+      annotations:
+        {{- include "agentmail.meshAnnotations" (dict "component" "postgres" "context" .) | nindent 8 }}
     spec:
       automountServiceAccountToken: false
       securityContext:
