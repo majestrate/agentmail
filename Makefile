@@ -117,6 +117,12 @@ maildir: generate
 
 server: $(ROOT)/bin/directory $(ROOT)/bin/agentmail
 
+compile: maildir relay milter submission-auth directory postfix dovecot
+	@echo compiled
+
+test: generate
+	$(GO) test ./...
+
 ensure-tools:
 	@command -v $(GO) >/dev/null 2>&1 || { echo "go is required to build" >&2; exit 1; }
 	@command -v protoc >/dev/null 2>&1 || { echo "protoc is required to generate the directory service" >&2; exit 1; }
