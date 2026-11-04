@@ -12,7 +12,7 @@ mail:
   domain: mail.internal
   # Postfix myhostname. make charts does not change it.
   hostname: mail.internal
-  pgsslmode: prefer
+  pgsslmode: require
   # vmail owns mailbox files. The directory process creates them on this volume.
   uid: 5000
   gid: 5000
@@ -25,7 +25,7 @@ mail:
 dns:
   enabled: true
   clusterDomain: cluster.local
-  upstream: 1.1.1.1 8.8.8.8
+  upstream: 9.9.9.9 8.8.8.8 1.1.1.1
 
 # Database role, database name, and password are a Kubernetes Secret written
 # by vaultwarden-kubernetes-secrets. This chart does not create that Secret
