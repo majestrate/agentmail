@@ -120,6 +120,30 @@ imagePullSecrets:
 {{- printf "%s-postgres" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
+{{- define "agentmail.selfSignedIssuerName" -}}
+{{- printf "%s-selfsigned" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.rootCAName" -}}
+{{- printf "%s-root-ca" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.caIssuerName" -}}
+{{- printf "%s-ca" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.postgresTLSSecret" -}}
+{{- printf "%s-tls" (include "agentmail.postgresName" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.dovecotTLSSecret" -}}
+{{- printf "%s-tls" (include "agentmail.dovecotName" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{- define "agentmail.postfixTLSSecret" -}}
+{{- printf "%s-tls" (include "agentmail.postfixName" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
 {{- define "agentmail.dovecotName" -}}
 {{- printf "%s-dovecot" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
@@ -158,6 +182,34 @@ out, and Postgres dials bypass the proxy.
 {{- if and .context.Values.istio.enabled (or (eq .component "directory") (eq .component "postfix") (eq .component "dovecot") (eq .component "submission-auth") (eq .component "milter") (eq .component "relay")) -}}
 true
 {{- end -}}
+{{- end }}
+
+{{/*
+Egress from a mesh pod to istiod and to istio-csr. Sidecar certificates
+are requested from istio-csr. XDS stays on istiod. The CSR rule selects
+the namespace and allows both the Service port and the container port.
+*/}}
+{{- define "agentmail.istioControlEgress" -}}
+{{- if .Values.istio.enabled }}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
+  ports:
+    - protocol: TCP
+      port: {{ .Values.istio.xdsPort }}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: {{ .Values.istio.csr.namespace }}
+  ports:
+    - protocol: TCP
+      port: {{ .Values.istio.csr.port }}
+    {{- if ne (int .Values.istio.csr.targetPort) (int .Values.istio.csr.port) }}
+    - protocol: TCP
+      port: {{ .Values.istio.csr.targetPort }}
+    {{- end }}
+{{- end }}
 {{- end }}
 
 {{- define "agentmail.meshAnnotations" -}}
@@ -581,6 +633,28 @@ Reject values the containers would refuse.
 {{- $ssl := list "disable" "allow" "prefer" "require" "verify-ca" "verify-full" }}
 {{- if not (has .Values.mail.pgsslmode $ssl) }}
 {{- fail (printf "mail.pgsslmode %s is not a libpq sslmode" .Values.mail.pgsslmode) }}
+{{- end }}
+{{- if and (not .Values.tls.enabled) (or (eq .Values.mail.pgsslmode "require") (eq .Values.mail.pgsslmode "verify-ca") (eq .Values.mail.pgsslmode "verify-full")) }}
+{{- fail "mail.pgsslmode require, verify-ca, and verify-full need tls.enabled so Postgres presents a certificate" }}
+{{- end }}
+{{- $hours := "^[1-9][0-9]*h$" }}
+{{- if not (regexMatch $hours .Values.tls.caDuration) }}
+{{- fail "tls.caDuration must be a number of hours, such as 87600h" }}
+{{- end }}
+{{- if not (regexMatch $hours .Values.tls.caRenewBefore) }}
+{{- fail "tls.caRenewBefore must be a number of hours, such as 720h" }}
+{{- end }}
+{{- if not (regexMatch $hours .Values.tls.duration) }}
+{{- fail "tls.duration must be a number of hours, such as 8760h" }}
+{{- end }}
+{{- if not (regexMatch $hours .Values.tls.renewBefore) }}
+{{- fail "tls.renewBefore must be a number of hours, such as 720h" }}
+{{- end }}
+{{- if ge (int (trimSuffix "h" .Values.tls.caRenewBefore)) (int (trimSuffix "h" .Values.tls.caDuration)) }}
+{{- fail "tls.caRenewBefore must be shorter than tls.caDuration" }}
+{{- end }}
+{{- if ge (int (trimSuffix "h" .Values.tls.renewBefore)) (int (trimSuffix "h" .Values.tls.duration)) }}
+{{- fail "tls.renewBefore must be shorter than tls.duration" }}
 {{- end }}
 {{- if .Values.images.registry }}
 {{- if or (contains "://" .Values.images.registry) (contains " " .Values.images.registry) }}

@@ -18,6 +18,18 @@ mail:
   gid: 5000
   homeRoot: /var/mail/vhosts
 
+# Private root CA. cert-manager issues it in this namespace and signs the
+# Postgres, Dovecot IMAP, and Postfix submission certificates. Istio sidecar
+# certificates are signed by the same root through istio-csr. make helm-install
+# installs cert-manager before this chart is applied. The CA private key stays
+# in the root Secret. Each server mounts only its own leaf Secret.
+tls:
+  enabled: true
+  caDuration: 87600h
+  caRenewBefore: 720h
+  duration: 8760h
+  renewBefore: 720h
+
 # The chart writes the kube-system CoreDNS Corefile. mail.hostname and
 # mail.domain resolve to the Postfix Service. The single-label Service names
 # Postfix dials resolve to the same Services, because Postfix does not apply
@@ -280,4 +292,11 @@ istio:
   revision: default
   systemNamespace: istio-system
   xdsPort: 15012
+  # istio-csr signs each sidecar certificate. Egress allows this
+  # namespace on the Service port and the container port. Calico matches
+  # the port after the Service is translated to the container port.
+  csr:
+    namespace: cert-manager
+    port: 443
+    targetPort: 6443
   lmtpPort: 10024

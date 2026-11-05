@@ -111,15 +111,7 @@ spec:
         - protocol: TCP
           port: {{ .Values.relay.mesh.containerPort }}
     {{- end }}
-    {{- if .Values.istio.enabled }}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.istio.xdsPort }}
-    {{- end }}
+    {{- include "agentmail.istioControlEgress" . | nindent 4 }}
     - ports:
         - protocol: UDP
           port: 53
@@ -156,15 +148,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
-    {{- if .Values.istio.enabled }}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.istio.xdsPort }}
-    {{- end }}
+    {{- include "agentmail.istioControlEgress" . | nindent 4 }}
     - ports:
         - protocol: UDP
           port: 53
@@ -201,15 +185,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
-    {{- if .Values.istio.enabled }}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.istio.xdsPort }}
-    {{- end }}
+    {{- include "agentmail.istioControlEgress" . | nindent 4 }}
     - ports:
         - protocol: UDP
           port: 53
@@ -254,15 +230,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
-    {{- if .Values.istio.enabled }}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.istio.xdsPort }}
-    {{- end }}
+    {{- include "agentmail.istioControlEgress" . | nindent 4 }}
     - ports:
         - protocol: UDP
           port: 53
@@ -307,14 +275,8 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.postgres.port }}
+    {{- include "agentmail.istioControlEgress" . | nindent 4 }}
     {{- if .Values.istio.enabled }}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.istio.xdsPort }}
     - to:
         - podSelector:
             matchLabels:
@@ -374,15 +336,7 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.relay.outboundPort }}
-    {{- if .Values.istio.enabled }}
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: {{ .Values.istio.systemNamespace }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.istio.xdsPort }}
-    {{- end }}
+    {{- include "agentmail.istioControlEgress" . | nindent 4 }}
     - ports:
         - protocol: UDP
           port: 53

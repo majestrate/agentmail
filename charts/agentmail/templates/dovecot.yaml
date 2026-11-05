@@ -84,6 +84,11 @@ spec:
               mountPath: /var/mail
             - name: runtime
               mountPath: /run/dovecot
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.dovecot.resources | nindent 12 }}
       volumes:
@@ -92,6 +97,13 @@ spec:
             claimName: {{ include "agentmail.dovecotName" . }}-data
         - name: runtime
           emptyDir: {}
+        {{- if .Values.tls.enabled }}
+        # 416 is mode 0640. The entrypoint copies the key for the login user.
+        - name: tls
+          secret:
+            secretName: {{ include "agentmail.dovecotTLSSecret" . }}
+            defaultMode: 416
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

@@ -75,6 +75,20 @@ spec:
               port: submission
           resources:
             {{- toYaml .Values.postfix.resources | nindent 12 }}
+          {{- if .Values.tls.enabled }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+          {{- end }}
+      {{- if .Values.tls.enabled }}
+      # 416 is mode 0640. The entrypoint copies the key for the postfix group.
+      volumes:
+        - name: tls
+          secret:
+            secretName: {{ include "agentmail.postfixTLSSecret" . }}
+            defaultMode: 416
+      {{- end }}
 ---
 apiVersion: v1
 kind: Service

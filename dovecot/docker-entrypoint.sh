@@ -58,6 +58,23 @@ configure_dovecot() {
     esac
 
     quoted=$(quote_value "$password")
+    # The leaf is mounted at /tls. Login processes read the key as dovenull,
+    # so copy it to a group they can read. Missing files leave IMAP plaintext.
+    ssl_settings=""
+    imaps_ssl=""
+    if [[ -s /tls/tls.crt && -s /tls/tls.key ]]; then
+        key_group=root
+        if id dovenull >/dev/null 2>&1; then
+            key_group=dovenull
+        fi
+        install -d -o root -g "$key_group" -m 0750 /etc/dovecot/tls
+        install -o root -g "$key_group" -m 0644 /tls/tls.crt /etc/dovecot/tls/tls.crt
+        install -o root -g "$key_group" -m 0640 /tls/tls.key /etc/dovecot/tls/tls.key
+        ssl_settings="ssl = yes
+ssl_server_cert_file = /etc/dovecot/tls/tls.crt
+ssl_server_key_file = /etc/dovecot/tls/tls.key"
+        imaps_ssl="    ssl = yes"
+    fi
     umask 077
     cat > /etc/dovecot/dovecot.conf <<EOF
 dovecot_config_version = 2.4.0
@@ -65,6 +82,7 @@ dovecot_storage_version = 2.4.0
 protocols = imap lmtp
 listen = *
 base_dir = /run/dovecot
+${ssl_settings}
 auth_allow_cleartext = yes
 auth_mechanisms = plain login
 auth_username_format = %{user | lower}
@@ -112,6 +130,7 @@ service imap-login {
   }
   inet_listener imaps {
     port = 993
+${imaps_ssl}
   }
 }
 

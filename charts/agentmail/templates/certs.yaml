@@ -1,0 +1,148 @@
+{{- if .Values.tls.enabled }}
+# The self-signed issuer signs only the root. The CA issuer signs leaves.
+# The root private key stays in the root Secret and is not mounted by pods.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.selfSignedIssuerName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "ca" "context" .) | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.rootCAName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "ca" "context" .) | nindent 4 }}
+spec:
+  isCA: true
+  commonName: {{ include "agentmail.rootCAName" . }}
+  secretName: {{ include "agentmail.rootCAName" . }}
+  duration: {{ .Values.tls.caDuration }}
+  renewBefore: {{ .Values.tls.caRenewBefore }}
+  privateKey:
+    algorithm: RSA
+    size: 2048
+    rotationPolicy: Never
+  issuerRef:
+    name: {{ include "agentmail.selfSignedIssuerName" . }}
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.caIssuerName" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "ca" "context" .) | nindent 4 }}
+spec:
+  ca:
+    secretName: {{ include "agentmail.rootCAName" . }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postgresTLSSecret" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postgres" "context" .) | nindent 4 }}
+spec:
+  secretName: {{ include "agentmail.postgresTLSSecret" . }}
+  duration: {{ .Values.tls.duration }}
+  renewBefore: {{ .Values.tls.renewBefore }}
+  {{- $cn := include "agentmail.clusterFQDN" (dict "name" (include "agentmail.postgresName" .) "context" .) }}
+  {{- if le (len $cn) 64 }}
+  commonName: {{ $cn | quote }}
+  {{- end }}
+  dnsNames:
+    - {{ include "agentmail.postgresName" . | quote }}
+    - {{ printf "%s.%s" (include "agentmail.postgresName" .) .Release.Namespace | quote }}
+    - {{ printf "%s.%s.svc" (include "agentmail.postgresName" .) .Release.Namespace | quote }}
+    - {{ include "agentmail.clusterFQDN" (dict "name" (include "agentmail.postgresName" .) "context" .) | quote }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: {{ include "agentmail.caIssuerName" . }}
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.dovecotTLSSecret" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "dovecot" "context" .) | nindent 4 }}
+spec:
+  secretName: {{ include "agentmail.dovecotTLSSecret" . }}
+  duration: {{ .Values.tls.duration }}
+  renewBefore: {{ .Values.tls.renewBefore }}
+  {{- $dovecotCN := include "agentmail.clusterFQDN" (dict "name" (include "agentmail.dovecotName" .) "context" .) }}
+  {{- if le (len $dovecotCN) 64 }}
+  commonName: {{ $dovecotCN | quote }}
+  {{- end }}
+  dnsNames:
+    - {{ include "agentmail.dovecotName" . | quote }}
+    - {{ printf "%s.%s" (include "agentmail.dovecotName" .) .Release.Namespace | quote }}
+    - {{ printf "%s.%s.svc" (include "agentmail.dovecotName" .) .Release.Namespace | quote }}
+    - {{ $dovecotCN | quote }}
+    {{- if and .Values.mail.hostname (ne .Values.mail.hostname (include "agentmail.dovecotName" .)) }}
+    - {{ .Values.mail.hostname | quote }}
+    {{- end }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: {{ include "agentmail.caIssuerName" . }}
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  namespace: {{ .Release.Namespace }}
+  name: {{ include "agentmail.postfixTLSSecret" . }}
+  labels:
+    {{- include "agentmail.componentLabels" (dict "name" "postfix" "context" .) | nindent 4 }}
+spec:
+  secretName: {{ include "agentmail.postfixTLSSecret" . }}
+  duration: {{ .Values.tls.duration }}
+  renewBefore: {{ .Values.tls.renewBefore }}
+  {{- $postfixCN := include "agentmail.clusterFQDN" (dict "name" (include "agentmail.postfixName" .) "context" .) }}
+  {{- if le (len $postfixCN) 64 }}
+  commonName: {{ $postfixCN | quote }}
+  {{- end }}
+  dnsNames:
+    - {{ include "agentmail.postfixName" . | quote }}
+    - {{ printf "%s.%s" (include "agentmail.postfixName" .) .Release.Namespace | quote }}
+    - {{ printf "%s.%s.svc" (include "agentmail.postfixName" .) .Release.Namespace | quote }}
+    - {{ $postfixCN | quote }}
+    {{- if and .Values.mail.hostname (ne .Values.mail.hostname (include "agentmail.postfixName" .)) }}
+    - {{ .Values.mail.hostname | quote }}
+    {{- end }}
+  usages:
+    - digital signature
+    - key encipherment
+    - server auth
+  privateKey:
+    algorithm: RSA
+    size: 2048
+  issuerRef:
+    name: {{ include "agentmail.caIssuerName" . }}
+    kind: Issuer
+    group: cert-manager.io
+{{- end }}

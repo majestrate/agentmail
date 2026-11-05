@@ -49,3 +49,7 @@ Image pulls use Secret {{ include "agentmail.registrySecretName" . }}. ExternalS
 {{- end }}
 
 Point networkPolicy.nodeCIDRs at the node network so kubelet probes stay allowed.
+{{- if .Values.tls.enabled }}
+
+cert-manager issues private root CA {{ include "agentmail.rootCAName" . }} and signs {{ include "agentmail.postgresTLSSecret" . }} for Postgres, {{ include "agentmail.dovecotTLSSecret" . }} for Dovecot IMAP, and {{ include "agentmail.postfixTLSSecret" . }} for Postfix submission. make helm-install-istio-csr copies that root into the cert-manager namespace and has istio-csr sign each sidecar certificate with it. The root private key stays in Secret {{ include "agentmail.rootCAName" . }}. Each server mounts only its own leaf Secret.
+{{- end }}

@@ -5,7 +5,8 @@
 # listener asks the milter at MILTER_HOST:MILTER_PORT and rejects destinations
 # this host does not accept. When POSTFIX_SUBMISSION_PORT is set, that port
 # listens on every interface, requires SASL, and asks the submission auth
-# daemon at SUBMISSION_AUTH_HOST:SUBMISSION_AUTH_PORT.
+# daemon at SUBMISSION_AUTH_HOST:SUBMISSION_AUTH_PORT. A certificate mounted
+# at /tls makes that listener offer STARTTLS. Port 25 stays without TLS.
 
 set -euo pipefail
 
@@ -186,6 +187,8 @@ configure_postfix() {
     postconf -e 'non_smtpd_milters='
     postconf -e 'milter_protocol=6'
     postconf -e 'milter_default_action=tempfail'
+    # Submission raises this on its own listener when a leaf certificate is mounted.
+    postconf -e 'smtpd_tls_security_level=none'
 
     # The packaged "smtp" service listens on every interface. Replace it with
     # a loopback listener. inet_interfaces stays "all" so submission does not
@@ -261,7 +264,17 @@ configure_submission() {
     postconf -P "${submission_port}/inet/smtpd_sasl_type=dovecot"
     postconf -P "${submission_port}/inet/smtpd_sasl_path=inet:${auth_host}:${auth_port}"
     postconf -P "${submission_port}/inet/smtpd_sasl_security_options=noanonymous"
-    postconf -P "${submission_port}/inet/smtpd_tls_security_level=none"
+    # may offers STARTTLS and still accepts plaintext clients. Port 25 stays none.
+    if [[ -s /tls/tls.crt && -s /tls/tls.key ]]; then
+        install -d -o root -g postfix -m 0750 /etc/postfix/tls
+        install -o root -g postfix -m 0644 /tls/tls.crt /etc/postfix/tls/tls.crt
+        install -o root -g postfix -m 0640 /tls/tls.key /etc/postfix/tls/tls.key
+        postconf -P "${submission_port}/inet/smtpd_tls_cert_file=/etc/postfix/tls/tls.crt"
+        postconf -P "${submission_port}/inet/smtpd_tls_key_file=/etc/postfix/tls/tls.key"
+        postconf -P "${submission_port}/inet/smtpd_tls_security_level=may"
+    else
+        postconf -P "${submission_port}/inet/smtpd_tls_security_level=none"
+    fi
     postconf -P "${submission_port}/inet/smtpd_tls_auth_only=no"
     postconf -P "${submission_port}/inet/smtpd_client_restrictions=permit_sasl_authenticated,reject"
     postconf -P "${submission_port}/inet/smtpd_relay_restrictions=permit_sasl_authenticated,reject"

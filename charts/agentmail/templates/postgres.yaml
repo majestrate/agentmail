@@ -48,6 +48,14 @@ spec:
           args:
             - -c
             - listen_addresses=*
+            {{- if .Values.tls.enabled }}
+            - -c
+            - ssl=on
+            - -c
+            - ssl_cert_file=/tls/tls.crt
+            - -c
+            - ssl_key_file=/tls/tls.key
+            {{- end }}
           ports:
             - name: postgres
               containerPort: {{ .Values.postgres.port }}
@@ -78,7 +86,7 @@ spec:
               command:
                 - /bin/sh
                 - -c
-                - pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+                - {{ if .Values.tls.enabled }}PGSSLMODE=require {{ end }}pg_isready -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB"
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 30
@@ -99,12 +107,25 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/postgresql/data
+            {{- if .Values.tls.enabled }}
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.postgres.resources | nindent 12 }}
       volumes:
         - name: data
           persistentVolumeClaim:
             claimName: {{ include "agentmail.postgresName" . }}-data
+        {{- if .Values.tls.enabled }}
+        # 416 is mode 0640. Postgres accepts a root-owned key at 0640 when
+        # its group is the server group, which fsGroup sets.
+        - name: tls
+          secret:
+            secretName: {{ include "agentmail.postgresTLSSecret" . }}
+            defaultMode: 416
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service
