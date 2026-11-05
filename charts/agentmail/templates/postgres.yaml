@@ -56,17 +56,17 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agentmail.secretName" . }}
-                  key: {{ .Values.vaultwarden.keys.postgresUser }}
+                  key: {{ .Values.externalSecrets.keys.postgresUser }}
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agentmail.secretName" . }}
-                  key: {{ .Values.vaultwarden.keys.postgresDatabase }}
+                  key: {{ .Values.externalSecrets.keys.postgresDatabase }}
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "agentmail.secretName" . }}
-                  key: {{ .Values.vaultwarden.keys.postgresPassword }}
+                  key: {{ .Values.externalSecrets.keys.postgresPassword }}
             - name: PGDATA
               value: {{ .Values.postgresql.pgdata | quote }}
           securityContext:

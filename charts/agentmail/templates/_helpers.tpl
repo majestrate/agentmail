@@ -47,11 +47,11 @@ app.kubernetes.io/instance: {{ .context.Release.Name }}
 {{- end }}
 
 {{/*
-Secret written by vaultwarden-kubernetes-secrets. An explicit name is used
-as given so it stays equal to the item's secret-name field.
+Kubernetes Secret the pods read. External Secrets or
+vaultwarden-kubernetes-secrets writes it, depending on secrets.provider.
 */}}
 {{- define "agentmail.secretName" -}}
-{{- $name := .Values.vaultwarden.secretName -}}
+{{- $name := .Values.externalSecrets.secretName -}}
 {{- if $name -}}
 {{- $name -}}
 {{- else -}}
@@ -60,16 +60,52 @@ as given so it stays equal to the item's secret-name field.
 {{- end }}
 
 {{/*
-dockerconfigjson Secret written by vaultwarden-kubernetes-secrets. Pods
-reference it when images.registry is set. An explicit name stays equal to
-the item's secret-name field.
+dockerconfigjson Secret the pods reference when images.registry is set.
+The selected secrets provider writes it.
 */}}
 {{- define "agentmail.registrySecretName" -}}
-{{- $name := .Values.vaultwarden.registrySecretName -}}
+{{- $name := .Values.externalSecrets.registrySecretName -}}
 {{- if $name -}}
 {{- $name -}}
 {{- else -}}
 {{- printf "%s-registry" (include "agentmail.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+SecretStore or ClusterSecretStore the ExternalSecrets read.
+*/}}
+{{- define "agentmail.secretStoreName" -}}
+{{- $name := .Values.externalSecrets.secretStore.name -}}
+{{- if $name -}}
+{{- $name -}}
+{{- else -}}
+{{- include "agentmail.fullname" . -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Remote id or path of the database JSON object. An empty value is the
+release name plus /mail-db, under the Vault KV mount or as the AWS secret id.
+*/}}
+{{- define "agentmail.remoteKey" -}}
+{{- $key := .Values.externalSecrets.remoteKey -}}
+{{- if $key -}}
+{{- $key -}}
+{{- else -}}
+{{- printf "%s/mail-db" (include "agentmail.fullname" .) -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Remote id or path whose dockerconfigjson property is the pull Secret.
+*/}}
+{{- define "agentmail.registryRemoteKey" -}}
+{{- $key := .Values.externalSecrets.registryRemoteKey -}}
+{{- if $key -}}
+{{- $key -}}
+{{- else -}}
+{{- printf "%s/registry" (include "agentmail.fullname" .) -}}
 {{- end -}}
 {{- end }}
 
@@ -230,17 +266,17 @@ Database role, database name, and base64 password from the synced Secret.
   valueFrom:
     secretKeyRef:
       name: {{ include "agentmail.secretName" . }}
-      key: {{ .Values.vaultwarden.keys.user }}
+      key: {{ .Values.externalSecrets.keys.user }}
 - name: POSTFIX_PGSQL_DBNAME
   valueFrom:
     secretKeyRef:
       name: {{ include "agentmail.secretName" . }}
-      key: {{ .Values.vaultwarden.keys.database }}
+      key: {{ .Values.externalSecrets.keys.database }}
 - name: POSTFIX_PGSQL_PASSWORD_B64
   valueFrom:
     secretKeyRef:
       name: {{ include "agentmail.secretName" . }}
-      key: {{ .Values.vaultwarden.keys.passwordB64 }}
+      key: {{ .Values.externalSecrets.keys.passwordB64 }}
 {{- end }}
 
 {{- define "agentmail.migrateContainer" -}}
@@ -393,18 +429,153 @@ Reject values the containers would refuse.
 {{- if not .Values.networkPolicy.agentCIDRs }}
 {{- fail "networkPolicy.agentCIDRs is required" }}
 {{- end }}
-{{- $secretName := .Values.vaultwarden.secretName }}
+{{- $secretName := .Values.externalSecrets.secretName }}
 {{- if and $secretName (or (gt (len $secretName) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $secretName))) }}
-{{- fail "vaultwarden.secretName must be a DNS label of at most 63 characters, matching the item secret-name" }}
+{{- fail "externalSecrets.secretName must be a DNS label of at most 63 characters" }}
 {{- end }}
-{{- $registrySecretName := .Values.vaultwarden.registrySecretName }}
+{{- $registrySecretName := .Values.externalSecrets.registrySecretName }}
 {{- if and $registrySecretName (or (gt (len $registrySecretName) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $registrySecretName))) }}
-{{- fail "vaultwarden.registrySecretName must be a DNS label of at most 63 characters, matching the item secret-name" }}
+{{- fail "externalSecrets.registrySecretName must be a DNS label of at most 63 characters" }}
 {{- end }}
-{{- $keys := list .Values.vaultwarden.keys.user .Values.vaultwarden.keys.database .Values.vaultwarden.keys.passwordB64 .Values.vaultwarden.keys.postgresUser .Values.vaultwarden.keys.postgresDatabase .Values.vaultwarden.keys.postgresPassword }}
-{{- range $keys }}
-{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" .) }}
-{{- fail (printf "vaultwarden secret key %q must contain only letters, digits, '.', '_', and '-'" .) }}
+{{- $keys := list .Values.externalSecrets.keys.user .Values.externalSecrets.keys.database .Values.externalSecrets.keys.passwordB64 .Values.externalSecrets.keys.postgresUser .Values.externalSecrets.keys.postgresDatabase .Values.externalSecrets.keys.postgresPassword }}
+{{- range $i, $key := $keys }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" $key) }}
+{{- fail (printf "externalSecrets key %q must contain only letters, digits, '.', '_', and '-'" $key) }}
+{{- end }}
+{{- range $j, $other := $keys }}
+{{- if and (lt $i $j) (eq $key $other) }}
+{{- fail (printf "externalSecrets key %q is repeated" $key) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- $refresh := .Values.externalSecrets.refreshInterval }}
+{{- if or (not (regexMatch "^([0-9]+h)?([0-9]+m)?([0-9]+s)?$" $refresh)) (not (regexMatch "[1-9]" $refresh)) }}
+{{- fail (printf "externalSecrets.refreshInterval must be a duration such as 1h, got %q" $refresh) }}
+{{- end }}
+{{- $storeKind := .Values.externalSecrets.secretStore.kind }}
+{{- if not (or (eq $storeKind "SecretStore") (eq $storeKind "ClusterSecretStore")) }}
+{{- fail "externalSecrets.secretStore.kind must be SecretStore or ClusterSecretStore" }}
+{{- end }}
+{{- $storeName := .Values.externalSecrets.secretStore.name }}
+{{- if and (eq $storeKind "ClusterSecretStore") (not $storeName) }}
+{{- fail "externalSecrets.secretStore.name is required for a ClusterSecretStore" }}
+{{- end }}
+{{- if and $storeName (or (gt (len $storeName) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $storeName))) }}
+{{- fail "externalSecrets.secretStore.name must be a DNS label of at most 63 characters" }}
+{{- end }}
+{{- $backend := .Values.secrets.provider }}
+{{- if not (or (eq $backend "external") (eq $backend "vaultwarden")) }}
+{{- fail "secrets.provider must be external or vaultwarden" }}
+{{- end }}
+{{- $provider := .Values.externalSecrets.secretStore.provider }}
+{{- $createStore := .Values.externalSecrets.secretStore.create }}
+{{- if and (eq $backend "vaultwarden") (or $createStore $provider) }}
+{{- fail "secrets.provider vaultwarden does not render ExternalSecret; leave externalSecrets.secretStore.create false and provider empty" }}
+{{- end }}
+{{- if and $provider (not $createStore) }}
+{{- fail "externalSecrets.secretStore.create must be true when provider is set" }}
+{{- end }}
+{{- if and $createStore (not (or (eq $provider "aws") (eq $provider "hashicorp"))) }}
+{{- fail "externalSecrets.secretStore.provider must be aws or hashicorp when the chart creates the SecretStore" }}
+{{- end }}
+{{- if and $createStore (ne $storeKind "SecretStore") }}
+{{- fail "externalSecrets.secretStore.kind must be SecretStore when this chart creates it; reference a ClusterSecretStore with create false" }}
+{{- end }}
+{{- $remoteKey := .Values.externalSecrets.remoteKey }}
+{{- if and $remoteKey (or (gt (len $remoteKey) 512) (not (regexMatch "^[A-Za-z0-9_./+=.@:-]+$" $remoteKey))) }}
+{{- fail "externalSecrets.remoteKey must be a secret id or path without spaces" }}
+{{- end }}
+{{- $registryRemoteKey := .Values.externalSecrets.registryRemoteKey }}
+{{- if and $registryRemoteKey (or (gt (len $registryRemoteKey) 512) (not (regexMatch "^[A-Za-z0-9_./+=.@:-]+$" $registryRemoteKey))) }}
+{{- fail "externalSecrets.registryRemoteKey must be a secret id or path without spaces" }}
+{{- end }}
+{{- if and .Values.externalSecrets.aws.region (ne $provider "aws") }}
+{{- fail "externalSecrets.aws.region is set without provider aws" }}
+{{- end }}
+{{- if and .Values.externalSecrets.aws.role (ne $provider "aws") }}
+{{- fail "externalSecrets.aws.role is set without provider aws" }}
+{{- end }}
+{{- if and (ne .Values.externalSecrets.aws.service "SecretsManager") (ne $provider "aws") }}
+{{- fail "externalSecrets.aws.service is set without provider aws" }}
+{{- end }}
+{{- if and $createStore (eq $provider "aws") }}
+{{- if not (or (eq .Values.externalSecrets.aws.service "SecretsManager") (eq .Values.externalSecrets.aws.service "ParameterStore")) }}
+{{- fail "externalSecrets.aws.service must be SecretsManager or ParameterStore" }}
+{{- end }}
+{{- if not (regexMatch "^[a-z0-9-]+$" .Values.externalSecrets.aws.region) }}
+{{- fail "externalSecrets.aws.region is required for provider aws" }}
+{{- end }}
+{{- if and .Values.externalSecrets.aws.role (not (regexMatch "^arn:(aws|aws-cn|aws-us-gov):iam::[0-9]{12}:role/.+$" .Values.externalSecrets.aws.role)) }}
+{{- fail "externalSecrets.aws.role must be an IAM role ARN" }}
+{{- end }}
+{{- end }}
+{{- if and .Values.externalSecrets.hashicorp.server (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.server is set without provider hashicorp" }}
+{{- end }}
+{{- if and .Values.externalSecrets.hashicorp.namespace (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.namespace is set without provider hashicorp" }}
+{{- end }}
+{{- if and .Values.externalSecrets.hashicorp.kubernetes.role (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.kubernetes.role is set without provider hashicorp" }}
+{{- end }}
+{{- if and .Values.externalSecrets.hashicorp.kubernetes.serviceAccount (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.kubernetes.serviceAccount is set without provider hashicorp" }}
+{{- end }}
+{{- if and .Values.externalSecrets.hashicorp.tokenSecretRef.name (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.tokenSecretRef.name is set without provider hashicorp" }}
+{{- end }}
+{{- if and (ne .Values.externalSecrets.hashicorp.version "v2") (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.version is set without provider hashicorp" }}
+{{- end }}
+{{- if and (ne .Values.externalSecrets.hashicorp.path "secret") (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.path is set without provider hashicorp" }}
+{{- end }}
+{{- if and (ne .Values.externalSecrets.hashicorp.auth "kubernetes") (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.auth is set without provider hashicorp" }}
+{{- end }}
+{{- if and (ne .Values.externalSecrets.hashicorp.kubernetes.mountPath "kubernetes") (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.kubernetes.mountPath is set without provider hashicorp" }}
+{{- end }}
+{{- if and (ne .Values.externalSecrets.hashicorp.tokenSecretRef.key "token") (ne $provider "hashicorp") }}
+{{- fail "externalSecrets.hashicorp.tokenSecretRef.key is set without provider hashicorp" }}
+{{- end }}
+{{- if and $createStore (eq $provider "hashicorp") }}
+{{- if not (regexMatch "^https://[^[:space:]]+$" .Values.externalSecrets.hashicorp.server) }}
+{{- fail "externalSecrets.hashicorp.server must be an https URL" }}
+{{- end }}
+{{- if not (or (eq .Values.externalSecrets.hashicorp.version "v1") (eq .Values.externalSecrets.hashicorp.version "v2")) }}
+{{- fail "externalSecrets.hashicorp.version must be v1 or v2" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9_-]+$" .Values.externalSecrets.hashicorp.path) }}
+{{- fail "externalSecrets.hashicorp.path must be the KV mount name" }}
+{{- end }}
+{{- if .Values.externalSecrets.hashicorp.namespace }}
+{{- if not (regexMatch "^[A-Za-z0-9_./-]+$" .Values.externalSecrets.hashicorp.namespace) }}
+{{- fail "externalSecrets.hashicorp.namespace must be a Vault namespace" }}
+{{- end }}
+{{- end }}
+{{- if eq .Values.externalSecrets.hashicorp.auth "kubernetes" }}
+{{- if not (regexMatch "^[A-Za-z0-9_./-]+$" .Values.externalSecrets.hashicorp.kubernetes.mountPath) }}
+{{- fail "externalSecrets.hashicorp.kubernetes.mountPath must be the Vault auth mount" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9_.:/-]+$" .Values.externalSecrets.hashicorp.kubernetes.role) }}
+{{- fail "externalSecrets.hashicorp.kubernetes.role is required for Kubernetes auth" }}
+{{- end }}
+{{- if .Values.externalSecrets.hashicorp.kubernetes.serviceAccount }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Values.externalSecrets.hashicorp.kubernetes.serviceAccount) }}
+{{- fail "externalSecrets.hashicorp.kubernetes.serviceAccount must be a DNS label" }}
+{{- end }}
+{{- end }}
+{{- else if eq .Values.externalSecrets.hashicorp.auth "token" }}
+{{- $tokenSecret := .Values.externalSecrets.hashicorp.tokenSecretRef.name }}
+{{- if or (gt (len $tokenSecret) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" $tokenSecret)) }}
+{{- fail "externalSecrets.hashicorp.tokenSecretRef.name must be a DNS label of at most 63 characters" }}
+{{- end }}
+{{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" .Values.externalSecrets.hashicorp.tokenSecretRef.key) }}
+{{- fail "externalSecrets.hashicorp.tokenSecretRef.key must contain only letters, digits, '.', '_', and '-'" }}
+{{- end }}
+{{- else }}
+{{- fail "externalSecrets.hashicorp.auth must be kubernetes or token" }}
 {{- end }}
 {{- end }}
 {{- $ssl := list "disable" "allow" "prefer" "require" "verify-ca" "verify-full" }}

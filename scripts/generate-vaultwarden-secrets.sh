@@ -1,7 +1,9 @@
 #!/bin/bash
 # Generate the agentmail database secrets with openssl and store them in
-# Vaultwarden. vaultwarden-kubernetes-secrets copies this item into the
-# Kubernetes Secret the chart reads.
+# Vaultwarden. With secrets.provider vaultwarden, vaultwarden-kubernetes-secrets
+# copies this item into the Kubernetes Secret the chart reads. With
+# secrets.provider external, External Secrets copies a remote JSON object
+# instead, and this Vaultwarden login is not that object.
 #
 # The Bitwarden CLI (bw) talks to Vaultwarden. This script keeps its own
 # CLI data directory and removes it on exit. A personal API key is required.
@@ -22,10 +24,12 @@
 # values of an item that already has this name.
 #
 # When DOCKER_REGISTRY, REGISTRY_USERNAME, and REGISTRY_PASSWORD are all
-# set, the script also stores a registry login. The sync service writes it
-# as a kubernetes.io/dockerconfigjson Secret. REGISTRY_SECRET_NAME defaults
-# to agentmail-registry. REGISTRY_EMAIL is optional. The registry host is
-# the first path component of DOCKER_REGISTRY, with no URL scheme.
+# set, the script also stores a registry login in Vaultwarden.
+# REGISTRY_SECRET_NAME defaults to agentmail-registry. REGISTRY_EMAIL is
+# optional. The registry host is the first path component of DOCKER_REGISTRY,
+# with no URL scheme. With secrets.provider vaultwarden, the sync service
+# writes kubernetes.io/dockerconfigjson from this login. The external
+# provider reads a dockerconfigjson property from its own secret store.
 
 set -euo pipefail
 umask 077

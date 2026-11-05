@@ -27,24 +27,78 @@ dns:
   clusterDomain: cluster.local
   upstream: 9.9.9.9 8.8.8.8 1.1.1.1
 
-# Database role, database name, and password are a Kubernetes Secret written
-# by vaultwarden-kubernetes-secrets. This chart does not create that Secret
-# and does not store a Vaultwarden server URL.
+# Database role, database name, and password are one Kubernetes Secret.
+# secrets.provider chooses who writes it. Pods only read the Secret.
 #
-# On the Vaultwarden item, set namespaces to the release namespace and
-# secret-name to the Secret name below (empty means {fullname}-mail-db).
-# Put each key in this list on the item as a custom field. The password
-# field POSTFIX_PGSQL_PASSWORD_B64 is standard base64, one line, no newline:
-#   printf '%s' 'the-password' | base64 -w0
+# external: External Secrets Operator. This chart creates the ExternalSecret
+# and, when secretStore.create is set, a namespaced SecretStore for AWS or
+# HashiCorp Vault. It does not install the operator and does not store
+# access keys, tokens, the database role, the database name, or the password.
+# The remote value is one JSON object. Each key below is a property of that
+# object. secretStore.create false references a SecretStore or
+# ClusterSecretStore that already exists, so any other provider the operator
+# supports is used through the same ExternalSecret. create true writes a
+# SecretStore for provider aws or hashicorp. AWS uses the operator identity
+# and can assume aws.role. HashiCorp auth is Kubernetes or a token in an
+# existing Secret. This chart does not create that token Secret.
+#
+# vaultwarden: vaultwarden-kubernetes-secrets writes the Secret. This chart
+# does not render ExternalSecret or SecretStore and does not store a
+# Vaultwarden server URL. On the Vaultwarden item, set namespaces to the
+# release namespace and secret-name to the Secret name below.
+#
+# POSTFIX_PGSQL_PASSWORD_B64 is standard base64, one line, no newline.
 # POSTGRES_PASSWORD is that same password in plaintext. The official Postgres
-# image reads it directly.
-vaultwarden:
+# image reads it directly. The key names below are the Secret keys for both
+# providers.
+secrets:
+  # external or vaultwarden.
+  provider: external
+externalSecrets:
+  refreshInterval: 1h
+  # Kubernetes Secret the pods read. Empty means {fullname}-mail-db.
   secretName: ""
-  # Pull Secret written by vaultwarden-kubernetes-secrets when images.registry
-  # is set. Empty means {fullname}-registry. The Vaultwarden item uses
-  # secret-type kubernetes.io/dockerconfigjson. This chart does not store
-  # the registry username or password.
+  # Pull Secret written when images.registry is set. Empty means
+  # {fullname}-registry. The remote property dockerconfigjson is the
+  # docker config JSON. This chart does not store the registry login.
   registrySecretName: ""
+  # Path or id of the remote JSON object. Empty means {fullname}/mail-db.
+  remoteKey: ""
+  # Path or id of the registry secret. Empty means {fullname}/registry.
+  registryRemoteKey: ""
+  secretStore:
+    # Empty means {fullname}. A ClusterSecretStore name is required.
+    name: ""
+    kind: SecretStore
+    create: false
+    # aws or hashicorp. Required when create is true. Empty when the
+    # SecretStore already exists.
+    provider: ""
+  aws:
+    # SecretsManager or ParameterStore.
+    service: SecretsManager
+    region: ""
+    # IAM role ARN the operator assumes. Empty uses the operator identity
+    # with no extra assume-role.
+    role: ""
+  hashicorp:
+    # KV mount. The remote key is the path under this mount.
+    server: ""
+    path: secret
+    version: v2
+    # Vault Enterprise namespace. Empty on open-source Vault.
+    namespace: ""
+    # kubernetes or token.
+    auth: kubernetes
+    kubernetes:
+      mountPath: kubernetes
+      role: ""
+      # Service account whose token Vault reviews. Empty uses the operator
+      # service account.
+      serviceAccount: ""
+    tokenSecretRef:
+      name: ""
+      key: token
   keys:
     user: POSTFIX_PGSQL_USER
     database: POSTFIX_PGSQL_DBNAME

@@ -71,40 +71,45 @@ make
 
 That produces `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`, the directory gRPC server at `bin/directory`, and the management client at `bin/agentmail`. `make server` generates the protobuf code and builds those two binaries. Each image is also its own target: `make postfix`, `make dovecot`, `make directory`, `make submission-auth`, `make milter`, `make relay`, or `make maildir`. The directory and maildir image targets generate the protobuf code first. The directory image includes `/usr/local/bin/agentmail`.
 
-`make charts` compiles `charts/agentmail` to `dist/agentmail.yaml` and the Vaultwarden Kubernetes secrets chart 2.1.0 to `dist/vaultwarden-kubernetes-secrets.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. `VAULTWARDEN_SERVER_URL` is required and must be an `https` URL. The chart does not store it. `MAIL_DOMAIN` is required. It is a lowercase DNS name, and it sets `mail.domain`. `mail.hostname` stays the value in the chart.
+`make charts` compiles `charts/agentmail` to `dist/agentmail.yaml`. Helm 3.19.0 is installed with `go install` when `helm` is not on `PATH`. `MAIL_DOMAIN` is required. It is a lowercase DNS name, and it sets `mail.domain`. `mail.hostname` stays the value in the chart. `SECRETS_PROVIDER` chooses who writes the Kubernetes Secret the pods read. Empty or `external` leaves an ExternalSecret pointed at a SecretStore that already exists. `aws` or `hashicorp` makes the chart create that SecretStore. `vaultwarden` does not render ExternalSecret; `make charts` also renders vaultwarden-kubernetes-secrets 2.1.0 to `dist/vaultwarden-kubernetes-secrets.yaml`, and `VAULTWARDEN_SERVER_URL` is required and must be an `https` URL. The mail chart does not store that URL. `VAULTWARDEN_ORGANIZATION_ID` and `VAULTWARDEN_COLLECTION_ID` are optional and, when set, are passed to the sync chart.
 
 ```shell
 make charts \
   DOCKER_REGISTRY="$DOCKER_REGISTRY" \
-  VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
-  MAIL_DOMAIN="$MAIL_DOMAIN"
+  MAIL_DOMAIN="$MAIL_DOMAIN" \
+  SECRETS_PROVIDER=aws \
+  AWS_REGION=us-east-1
 ```
 
-`VAULTWARDEN_ORGANIZATION_ID` and `VAULTWARDEN_COLLECTION_ID` are optional. When set, they are passed to the sync chart.
+`make apply` runs `helm-add`, `helm-update`, and `helm-install` first, then renders the chart and applies `dist/agentmail.yaml`. Istio is installed before the mail manifests. External Secrets is installed before them when `SECRETS_PROVIDER` is empty, `external`, `aws`, or `hashicorp`. `SECRETS_PROVIDER=vaultwarden` installs vaultwarden-kubernetes-secrets instead, writes Secret `vaultwarden-kubernetes-secrets` from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD` (`BW_MASTER_PASSWORD` when that is unset), and does not install External Secrets. A later apply reuses that Secret when those variables are unset. `kubectl` must be on `PATH`.
 
-`make apply` runs `helm-add`, `helm-update`, and `helm-install` first, then renders the charts and applies `dist/agentmail.yaml`. Istio is installed before the mail manifests, which include its custom resources. `helm-install` writes Secret `vaultwarden-kubernetes-secrets` from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD` (`BW_MASTER_PASSWORD` when that is unset) and installs the sync chart with Helm. A later apply reuses the Secret when those variables are unset. `kubectl` must be on `PATH`.
+```shell
+make apply \
+  DOCKER_REGISTRY="$DOCKER_REGISTRY" \
+  MAIL_DOMAIN="$MAIL_DOMAIN" \
+  SECRETS_PROVIDER=hashicorp \
+  VAULT_ADDR="$VAULT_ADDR" \
+  VAULT_ROLE=agentmail
+```
 
 ```shell
 make apply \
   DOCKER_REGISTRY="$DOCKER_REGISTRY" \
   VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
   MAIL_DOMAIN="$MAIL_DOMAIN" \
+  SECRETS_PROVIDER=vaultwarden \
   BW_CLIENTID="$BW_CLIENTID" \
   BW_CLIENTSECRET="$BW_CLIENTSECRET" \
   VAULTWARDEN__MASTERPASSWORD="$VAULTWARDEN__MASTERPASSWORD"
 ```
 
-`make helm-add` adds the Istio Helm repository. `make helm-update` refreshes it. `make helm-install` does both, then `helm upgrade --install` for `istio-base` and `istiod` at `ISTIO_VERSION` (1.31.3) and for `vaultwarden-kubernetes-secrets` at `VWK8S_VERSION` (2.1.0). The Vaultwarden chart is OCI, so it has no repository to add. Istio uses the sidecar profile (`defaultRevision=default`). `make apply` depends on `helm-install`, so that order runs before the mail chart. `helm-install` alone does not install `charts/agentmail`. A second run upgrades the external releases in place. `VAULTWARDEN_SERVER_URL` is required. The sync credential Secret is written before the Vaultwarden release.
+`make helm-add` adds the Istio and External Secrets Helm repositories. The Vaultwarden chart is OCI, so it has no repository to add. `make helm-update` refreshes the Istio and External Secrets repositories. `make helm-install` does both, then `helm upgrade --install` for `istio-base` and `istiod` at `ISTIO_VERSION` (1.31.3) and for the selected secret backend: `external-secrets` at `ESO_VERSION` (2.14.0), or `vaultwarden-kubernetes-secrets` at `VWK8S_VERSION` (2.1.0) when `SECRETS_PROVIDER=vaultwarden`. Istio uses the sidecar profile (`defaultRevision=default`). `make apply` depends on `helm-install`, so that order runs before the mail chart. `helm-install` alone does not install `charts/agentmail`. A second run upgrades the external releases in place. `VAULTWARDEN_SERVER_URL` is required only for the Vaultwarden backend. The sync credential Secret is written before that release.
 
 ```shell
-make helm-install \
-  VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
-  BW_CLIENTID="$BW_CLIENTID" \
-  BW_CLIENTSECRET="$BW_CLIENTSECRET" \
-  VAULTWARDEN__MASTERPASSWORD="$VAULTWARDEN__MASTERPASSWORD"
+make helm-install
 ```
 
-`make teardown` reverses `make apply`. It deletes the mail namespace, including the mail and Postgres volumes, while `istiod` is still installed. It then uninstalls the `vaultwarden-kubernetes-secrets` Helm release and deletes that namespace, including the sync Deployment and its credential Secret, plus that release's ClusterRole and ClusterRoleBinding. It uninstalls `istiod` and `istio-base`, then deletes the `istio-system` namespace. Missing releases and namespaces are left alone. `kubectl` and `helm` must be on `PATH`. `NAMESPACE` selects the mail namespace and must be a DNS label. The default is `agentmail`. `default`, `kube-system`, `kube-public`, and `kube-node-lease` are refused.
+`make teardown` reverses `make apply`. It deletes the mail namespace, including the mail and Postgres volumes, while `istiod` and the secret backend are still installed. It then uninstalls the `external-secrets` Helm release and deletes that namespace. It uninstalls `vaultwarden-kubernetes-secrets` when that release is present and deletes that namespace, including the sync Deployment and its credential Secret, plus that release's ClusterRole and ClusterRoleBinding. It uninstalls `istiod` and `istio-base`, then deletes the `istio-system` namespace. Missing releases and namespaces are left alone. `kubectl` and `helm` must be on `PATH`. `NAMESPACE` selects the mail namespace and must be a DNS label. The default is `agentmail`. `default`, `kube-system`, `kube-public`, and `kube-node-lease` are refused.
 
 ```shell
 make teardown
@@ -134,13 +139,13 @@ make push apply
 ```
 ## Install
 
-Database credentials come from [vaultwarden-kubernetes-secrets](https://github.com/antoniolago/vaultwarden-kubernetes-secrets). That service copies a Vaultwarden item into a Kubernetes Secret. This chart reads the Secret and does not store a Vaultwarden server URL, the database role, the database name, or the password.
+Database credentials are one Kubernetes Secret. `secrets.provider` chooses who writes it. Pods read that Secret. The chart does not store the database role, the database name, or the password.
 
-`make helm-install` installs this sync service with Helm from `oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets` at version 2.1.0, in namespace `vaultwarden-kubernetes-secrets`, with `namespace.create=true` and `VAULTWARDEN__SERVERURL` set from `VAULTWARDEN_SERVER_URL`. The install uses `--take-ownership`, so a namespace and objects created earlier by `kubectl apply` can join the release. It writes Secret `vaultwarden-kubernetes-secrets` from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD` before that release. Vaultwarden organization API keys do not work with its API, so the client id belongs to a user. `make apply` runs that install before it applies the mail chart.
+With `secrets.provider` `external` (the default), External Secrets Operator copies one remote JSON object into the Secret. `make helm-install` installs the operator from `https://charts.external-secrets.io` at version 2.14.0, in namespace `external-secrets`, with `installCRDs=true`. `make apply` runs that install before it applies the mail chart. With `SECRETS_PROVIDER` empty or `external`, ExternalSecret `agentmail-mail-db` reads `agentmail/mail-db` from SecretStore `agentmail`, which must already exist. That store can be any provider the operator supports. Set `SECRETS_PROVIDER=aws` with `AWS_REGION` to have the chart create a Secrets Manager SecretStore. `AWS_SERVICE` is `SecretsManager` or `ParameterStore`. `AWS_ROLE` is an optional IAM role ARN the operator assumes. The operator's own identity is used. This chart does not store access keys. Set `SECRETS_PROVIDER=hashicorp` with `VAULT_ADDR` (an `https` URL) and `VAULT_ROLE` to create a Vault KV SecretStore. `VAULT_AUTH` is `kubernetes` or `token`. `VAULT_PATH` is the KV mount and defaults to `secret`. `VAULT_KV_VERSION` is `v1` or `v2`. Token auth reads `VAULT_TOKEN_SECRET` and does not put the token in the chart. `SECRETS_REMOTE_KEY` overrides the remote id.
 
-`make charts` writes the same release to `dist/vaultwarden-kubernetes-secrets.yaml`. The installed release is the Helm one from `make helm-install`. The sync Deployment reads Secret `vaultwarden-kubernetes-secrets` (`BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD`).
+With `secrets.provider` `vaultwarden`, [vaultwarden-kubernetes-secrets](https://github.com/antoniolago/vaultwarden-kubernetes-secrets) copies a Vaultwarden item into the same Secret. The mail chart does not render ExternalSecret and does not store a Vaultwarden server URL. `make helm-install` with `SECRETS_PROVIDER=vaultwarden` installs the sync service from `oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets` at version 2.1.0, in namespace `vaultwarden-kubernetes-secrets`, with `namespace.create=true` and `VAULTWARDEN__SERVERURL` set from `VAULTWARDEN_SERVER_URL`. The install uses `--take-ownership`. It writes Secret `vaultwarden-kubernetes-secrets` from `BW_CLIENTID`, `BW_CLIENTSECRET`, and `VAULTWARDEN__MASTERPASSWORD` before that release. Vaultwarden organization API keys do not work with its API, so the client id belongs to a user. `make charts` writes that release to `dist/vaultwarden-kubernetes-secrets.yaml`. The installed release is the Helm one from `make helm-install`.
 
-`scripts/generate-vaultwarden-secrets.sh` generates the database role, database name, and password with `openssl` and stores them as one Vaultwarden login. The password is hex, so the Postfix map line stays a single value. `POSTFIX_PGSQL_PASSWORD_B64` is that password in standard base64, one line. `POSTGRES_PASSWORD` is the password itself. The script needs the Bitwarden CLI (`bw`) and a personal API key. When `BW_MASTER_PASSWORD` is unset, the script prompts for the master password and does not echo it.
+`scripts/generate-vaultwarden-secrets.sh` generates the database role, database name, and password with `openssl` and stores them as one Vaultwarden login for the Vaultwarden backend. The password is hex, so the Postfix map line stays a single value. `POSTFIX_PGSQL_PASSWORD_B64` is that password in standard base64, one line. `POSTGRES_PASSWORD` is the password itself. The script needs the Bitwarden CLI (`bw`) and a personal API key. When `BW_MASTER_PASSWORD` is unset, the script prompts for the master password and does not echo it. The External Secrets backend does not read that Vaultwarden item.
 
 ```shell
 VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
@@ -150,12 +155,12 @@ BW_MASTER_PASSWORD="$BW_MASTER_PASSWORD" \
 scripts/generate-vaultwarden-secrets.sh
 ```
 
-The item name and `secret-name` default to `agentmail-mail-db`. `namespaces` defaults to `agentmail`. Set `ROTATE=1` to replace an item that already has that name. Set `VAULTWARDEN_ORGANIZATION_ID` and `VAULTWARDEN_COLLECTION_ID` together to put the item in an organization collection. The custom fields the sync service copies are:
+The item name and `secret-name` default to `agentmail-mail-db`. `namespaces` defaults to `agentmail`. Set `ROTATE=1` to replace an item that already has that name. Set `VAULTWARDEN_ORGANIZATION_ID` and `VAULTWARDEN_COLLECTION_ID` together to put the item in an organization collection. The custom fields the sync service copies are the same six keys as the External Secrets JSON properties, plus `namespaces` and `secret-name`.
 
-| Custom field | Value |
+The remote JSON properties are:
+
+| Property | Value |
 | --- | --- |
-| `namespaces` | Release namespace. |
-| `secret-name` | Kubernetes Secret name. |
 | `POSTFIX_PGSQL_USER` | Database role. Letters, digits, `.`, `_`, and `-` only. |
 | `POSTGRES_USER` | The same role. |
 | `POSTFIX_PGSQL_DBNAME` | Database name. Same character limits. |
@@ -163,26 +168,7 @@ The item name and `secret-name` default to `agentmail-mail-db`. `namespaces` def
 | `POSTFIX_PGSQL_PASSWORD_B64` | Standard base64 of the password, one line, no newline. |
 | `POSTGRES_PASSWORD` | The password itself. The Postgres image reads this directly. |
 
-When `DOCKER_REGISTRY`, `REGISTRY_USERNAME`, and `REGISTRY_PASSWORD` are set, the same script stores a second login for the registry. `REGISTRY_EMAIL` is optional. `REGISTRY_SECRET_NAME` defaults to `agentmail-registry`. The sync service writes a `kubernetes.io/dockerconfigjson` Secret from that login. The item username and password are the registry login. `docker-config-json-server` is the registry host, the first path component of `DOCKER_REGISTRY`.
-
-```shell
-DOCKER_REGISTRY="$DOCKER_REGISTRY" \
-REGISTRY_USERNAME="$REGISTRY_USERNAME" \
-REGISTRY_PASSWORD="$REGISTRY_PASSWORD" \
-VAULTWARDEN_SERVER_URL="$VAULTWARDEN_SERVER_URL" \
-BW_CLIENTID="$BW_CLIENTID" \
-BW_CLIENTSECRET="$BW_CLIENTSECRET" \
-BW_MASTER_PASSWORD="$BW_MASTER_PASSWORD" \
-scripts/generate-vaultwarden-secrets.sh
-```
-
-| Custom field | Value |
-| --- | --- |
-| `namespaces` | Release namespace. |
-| `secret-name` | Kubernetes Secret name. Defaults to `agentmail-registry`. |
-| `secret-type` | `kubernetes.io/dockerconfigjson`. |
-| `docker-config-json-server` | Registry host. |
-| `docker-config-json-email` | Optional account email. |
+The password is hex when it is generated for a Postfix map, so the map line stays a single value. `POSTFIX_PGSQL_PASSWORD_B64` is that password in standard base64, one line. `POSTGRES_PASSWORD` is the password itself.
 
 Point `networkPolicy.nodeCIDRs` at the node network so kubelet probes are allowed. `networkPolicy.agentCIDRs` is both the NetworkPolicy source and Postfix `mynetworks`.
 
@@ -190,12 +176,15 @@ Point `networkPolicy.nodeCIDRs` at the node network so kubelet probes are allowe
 helm install agentmail charts/agentmail -n agentmail --create-namespace \
   --set networkPolicy.nodeCIDRs[0]=NODE_CIDR \
   --set images.registry="$DOCKER_REGISTRY" \
-  --set-string mail.domain="$MAIL_DOMAIN"
+  --set-string mail.domain="$MAIL_DOMAIN" \
+  --set externalSecrets.secretStore.create=true \
+  --set-string externalSecrets.secretStore.provider=aws \
+  --set-string externalSecrets.aws.region=us-east-1
 ```
 
-`DOCKER_REGISTRY` is a registry host or host/path, with no URL scheme and no trailing slash. It is prefixed onto `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`. The migration init container uses the same directory image. `docker.io/library/postgres:17` is left unchanged. Pods that pull those seven images reference image pull Secret `agentmail-registry` (override with `vaultwarden.registrySecretName`). That Secret is the docker config the sync service writes. The chart does not store the registry username or password.
+`DOCKER_REGISTRY` is a registry host or host/path, with no URL scheme and no trailing slash. It is prefixed onto `agentmail-postfix`, `agentmail-dovecot`, `agentmail-directory`, `agentmail-submission-auth`, `agentmail-milter`, `agentmail-relay`, and `agentmail-maildir`. The migration init container uses the same directory image. `docker.io/library/postgres:17` is left unchanged. Pods that pull those seven images reference image pull Secret `agentmail-registry` (override with `externalSecrets.registrySecretName`). When `images.registry` is set and `secrets.provider` is `external`, ExternalSecret `agentmail-registry` reads property `dockerconfigjson` from `agentmail/registry` (`SECRETS_REGISTRY_REMOTE_KEY` overrides that id) and writes a `kubernetes.io/dockerconfigjson` Secret. When `secrets.provider` is `vaultwarden`, the sync service writes that Secret from a login whose `secret-type` is `kubernetes.io/dockerconfigjson`. The chart does not store the registry username or password.
 
-`charts/agentmail/values.yaml` holds the mail hostname, image names, ports, volume sizes, and the Vaultwarden Secret key names. `mail.domain` defaults to `mail.internal` for a direct render. `make charts` and `make apply` replace it with `MAIL_DOMAIN`. `mail.hostname` stays `mail.internal` unless the chart value is changed. A release whose name contains `agentmail` keeps that name, so the default Secret is `agentmail-mail-db`. Set `vaultwarden.secretName` when the item uses another `secret-name`.
+`charts/agentmail/values.yaml` holds the mail hostname, image names, ports, volume sizes, and the Secret key names. `mail.domain` defaults to `mail.internal` for a direct render. `make charts` and `make apply` replace it with `MAIL_DOMAIN`. `mail.hostname` stays `mail.internal` unless the chart value is changed. A release whose name contains `agentmail` keeps that name, so the default Secret is `agentmail-mail-db`. Set `externalSecrets.secretName` to use another Secret name. Both backends write that same name.
 
 After install, agents submit mail on Service `agentmail-postfix` port 587 and read IMAP on `agentmail-dovecot` port 143. With Istio enabled, mesh clients deliver inbound mail to `agentmail-postfix` port 25.
 

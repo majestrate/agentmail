@@ -19,21 +19,33 @@ Mail domain {{ .Values.mail.domain }}. Agents on {{ include "agentmail.internalN
 {{ .Values.mail.hostname }} resolves to {{ include "agentmail.postfixName" . }}. {{ .Values.mail.domain }} has an MX pointing at that name.
 {{- end }}
 
-Database user, database name, and password come from Secret {{ include "agentmail.secretName" . }}, written by vaultwarden-kubernetes-secrets.
+Database user, database name, and password come from Secret {{ include "agentmail.secretName" . }}.
+{{- if eq .Values.secrets.provider "vaultwarden" }}
+vaultwarden-kubernetes-secrets writes that Secret. This chart does not store a Vaultwarden server URL.
 Before the pods can start:
 
-1. Install the sync service and point it at your Vaultwarden server:
-     helm upgrade -i vaultwarden-kubernetes-secrets \
-       oci://ghcr.io/antoniolago/charts/vaultwarden-kubernetes-secrets \
-       --version 2.1.0 \
-       -n vaultwarden-kubernetes-secrets --create-namespace \
-       --set namespace.create=true \
-       --set-string env.config.VAULTWARDEN__SERVERURL="$VAULTWARDEN_SERVER_URL"
+1. Install the sync service and point it at your Vaultwarden server. make helm-install with SECRETS_PROVIDER=vaultwarden installs chart 2.1.0 in namespace vaultwarden-kubernetes-secrets.
 2. Create a Vaultwarden item whose namespaces field includes {{ .Release.Namespace }} and whose secret-name is {{ include "agentmail.secretName" . }}.
-3. Add custom fields {{ .Values.vaultwarden.keys.user }}, {{ .Values.vaultwarden.keys.postgresUser }}, {{ .Values.vaultwarden.keys.database }}, {{ .Values.vaultwarden.keys.postgresDatabase }}, {{ .Values.vaultwarden.keys.passwordB64 }}, and {{ .Values.vaultwarden.keys.postgresPassword }}. {{ .Values.vaultwarden.keys.passwordB64 }} is standard base64. {{ .Values.vaultwarden.keys.postgresPassword }} is the plaintext password.
+3. Add custom fields {{ .Values.externalSecrets.keys.user }}, {{ .Values.externalSecrets.keys.postgresUser }}, {{ .Values.externalSecrets.keys.database }}, {{ .Values.externalSecrets.keys.postgresDatabase }}, {{ .Values.externalSecrets.keys.passwordB64 }}, and {{ .Values.externalSecrets.keys.postgresPassword }}. {{ .Values.externalSecrets.keys.passwordB64 }} is standard base64. {{ .Values.externalSecrets.keys.postgresPassword }} is the plaintext password.
 {{- if .Values.images.registry }}
 
 Image pulls use Secret {{ include "agentmail.registrySecretName" . }}. vaultwarden-kubernetes-secrets writes that Secret from a login whose secret-type is kubernetes.io/dockerconfigjson, whose secret-name is {{ include "agentmail.registrySecretName" . }}, and whose namespaces field includes {{ .Release.Namespace }}. The item username and password are the registry login. docker-config-json-server is the registry host.
+{{- end }}
+{{- else }}
+ExternalSecret {{ include "agentmail.secretName" . }} reads {{ include "agentmail.remoteKey" . }} from {{ .Values.externalSecrets.secretStore.kind }} {{ include "agentmail.secretStoreName" . }} and writes that Secret.
+Before the pods can start:
+
+1. Install External Secrets Operator. make helm-install installs chart 2.14.0 in namespace external-secrets.
+2. The remote value is one JSON object. Its properties are {{ .Values.externalSecrets.keys.user }}, {{ .Values.externalSecrets.keys.postgresUser }}, {{ .Values.externalSecrets.keys.database }}, {{ .Values.externalSecrets.keys.postgresDatabase }}, {{ .Values.externalSecrets.keys.passwordB64 }}, and {{ .Values.externalSecrets.keys.postgresPassword }}. {{ .Values.externalSecrets.keys.passwordB64 }} is standard base64. {{ .Values.externalSecrets.keys.postgresPassword }} is the plaintext password.
+{{- if .Values.externalSecrets.secretStore.create }}
+3. This release creates SecretStore {{ include "agentmail.secretStoreName" . }} for provider {{ .Values.externalSecrets.secretStore.provider }}. AWS uses the operator identity. HashiCorp uses Kubernetes auth or a token Secret this chart does not create.
+{{- else }}
+3. SecretStore {{ include "agentmail.secretStoreName" . }} must already exist. Leave externalSecrets.secretStore.create false for any External Secrets provider, including one you created for AWS or HashiCorp. Set create true and provider aws or hashicorp for this chart to write a namespaced SecretStore.
+{{- end }}
+{{- if .Values.images.registry }}
+
+Image pulls use Secret {{ include "agentmail.registrySecretName" . }}. ExternalSecret {{ include "agentmail.registrySecretName" . }} reads property dockerconfigjson from {{ include "agentmail.registryRemoteKey" . }} and writes a kubernetes.io/dockerconfigjson Secret. The chart does not store the registry login.
+{{- end }}
 {{- end }}
 
 Point networkPolicy.nodeCIDRs at the node network so kubelet probes stay allowed.
